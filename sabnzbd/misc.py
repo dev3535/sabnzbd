@@ -787,6 +787,28 @@ def check_mount(path):
     return not m
 
 
+def get_cache_limit(default_limit):
+    """ Depending on OS, calculate cache limit """
+    # OSX/Windows get Default value
+    if sabnzbd.WIN32 or sabnzbd.DARWIN:
+        return default_limit
+
+    # Calculate, if possible
+    try:
+        # Use 1/4th of available memory
+        mem_bytes = (os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES'))/4
+        # Not more than the maximum we think is reasonable
+        if mem_bytes > from_units(default_limit):
+            return default_limit
+        elif mem_bytes > from_units('32M'):
+            # We make sure it's at least a valid value
+            return to_units(mem_bytes)
+    except:
+        pass
+    # If failed, leave empty so user needs to decide
+    return ''
+
+
 ##############################################################################
 # Locked directory operations
 ##############################################################################
