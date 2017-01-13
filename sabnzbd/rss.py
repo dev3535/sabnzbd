@@ -465,9 +465,16 @@ class RSSQueue(object):
                         if reEnabled[n]:
                             if category and reTypes[n] == 'C':
                                 found = re.search(regexes[n], category)
-                                if not found:
-                                    logging.debug("Filter rejected on rule %d", n)
-                                    result = False
+                                # -------------------------------------------------------------------------
+                                # Customization
+                                # -------------------------------------------------------------------------
+                                # if not found:
+                                #     logging.debug("Filter rejected on rule %d", n)
+                                #     result = False
+                                #     break
+                                if found:
+                                    logging.debug("Filter matched on rule %d", n)
+                                    result = True
                                     break
                             elif reTypes[n] == '<' and size and from_units(regexes[n]) < size:
                                 # "Size at most" : too large
