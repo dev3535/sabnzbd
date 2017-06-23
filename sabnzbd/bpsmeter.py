@@ -22,7 +22,6 @@ sabnzbd.bpsmeter - bpsmeter
 import time
 import logging
 import re
-from math import floor
 
 import sabnzbd
 from sabnzbd.constants import BYTES_FILE_NAME, BYTES_FILE_NAME_OLD, KIBI
@@ -156,7 +155,6 @@ class BPSMeter(object):
     def defaults(self):
         """ Get the latest data from the database and assign to a fake server """
         logging.debug('Setting default BPS meter values')
-        import sabnzbd.database
         history_db = sabnzbd.database.HistoryDB()
         grand, month, week = history_db.get_history_size()
         history_db.close()
@@ -245,9 +243,8 @@ class BPSMeter(object):
             if self.have_quota and self.quota_enabled:
                 self.left -= amount
                 if self.left <= 0.0:
-                    from sabnzbd.downloader import Downloader
-                    if Downloader.do and not Downloader.do.paused:
-                        Downloader.do.pause()
+                    if sabnzbd.downloader.Downloader.do and not sabnzbd.downloader.Downloader.do.paused:
+                        sabnzbd.downloader.Downloader.do.pause()
                         logging.warning(T('Quota spent, pausing downloading'))
 
         # Speedometer
@@ -283,10 +280,12 @@ class BPSMeter(object):
         self.bps = 0.0
 
     def add_empty_time(self):
-        nr_diffs = int(time.time() - self.speed_log_time)
+        # Extra zeros, but never more than the maxium!
+        nr_diffs = min(int(time.time() - self.speed_log_time), self.bps_list_max)
         if nr_diffs > 1:
             self.bps_list.extend([0] * nr_diffs)
 
+        # Always trim the list to the max-length
         if len(self.bps_list) > self.bps_list_max:
             self.bps_list = self.bps_list[len(self.bps_list) - self.bps_list_max:]
 
@@ -335,15 +334,15 @@ class BPSMeter(object):
             return None
 
         # Calculate the variance in the speed
-        avg = sum(self.bps_list[-timespan:])/timespan
+        avg = sum(self.bps_list[-timespan:]) / timespan
         vari = 0
         for bps in self.bps_list[-timespan:]:
             vari += abs(bps - avg)
-        vari = vari/timespan
+        vari = vari / timespan
 
         try:
             # See if the variance is less than 5%
-            if (vari / (self.bps/KIBI)) < 0.05:
+            if (vari / (self.bps / KIBI)) < 0.05:
                 return avg
             else:
                 return False
@@ -351,7 +350,6 @@ class BPSMeter(object):
             # Probably one of the values was 0
             pass
         return None
-
 
     def reset_quota(self, force=False):
         """ Check if it's time to reset the quota, optionally resuming
@@ -465,9 +463,8 @@ class BPSMeter(object):
 
     def resume(self):
         """ Resume downloading """
-        from sabnzbd.downloader import Downloader
-        if cfg.quota_resume() and Downloader.do and Downloader.do.paused:
-            Downloader.do.resume()
+        if cfg.quota_resume() and sabnzbd.downloader.Downloader.do and sabnzbd.downloader.Downloader.do.paused:
+            sabnzbd.downloader.Downloader.do.resume()
 
     def midnight(self):
         """ Midnight action: dummy update for all servers """

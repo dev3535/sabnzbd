@@ -1,77 +1,47 @@
-Release Notes  -  SABnzbd 1.2.0
-====================================
+Release Notes  -  SABnzbd 2.1.0
+=========================================================
 
-## What's new in 1.2.0
-- New SSL engine:
-  * SSL connections will always negotiate strongest encryption available
-  * Strict verification of certificates (optional)
-  * Set custom SSL-Ciphers to increase performance (lowers encryption strength)
-  * Detail information in Status window on type of encryption used
-  * Webserver can use stronger encryption for HTTPS connections
-- New RAR-file processing with full support for RAR5:
-  * All passwords are now tried on the first complete RAR-file during download
-  * RAR-based verification when no par2-files or SFV-files are available
-- Improvements to Categories processing:
-  * Matching of start of category inside NZB with user-categories
-    For example 'Movies > HD' will match a 'movies' category
-  * Categories can now be ordered to customize matching to categories in NZB's
-- Improvements to RSS feed management:
-  * Multiple feeds can now share the same set of filters
-  * Added 'From Show SxxEyy' filter
-  * Feeds will only re-evaluate after clicking 'Apply Filters' or 'Read Feed'
-  * Information from newznab, nZEDb and nntmux tags used (age, size and show info)
-  * Feeds now show the category, age and when the NZB was added to the queue
-- Detection of par2-files in completely obfuscated NZB's
-- Verification (par2) and UnRAR can now be aborted from Glitter
-- Faster startup and restart of SABnzbd
-- Duplicates can now be marked as Failed (to notify external tools)
-- Config Search function
+## Changes since 2.0.1
+- Windows-only: Will now use MultiPar for verification and repair. MultiPar uses
+  the latest optimizations, multiple cores and can utilize the GPU, resulting in
+  repairs often being twice as fast. Created by Yutaka Sawada (Windows only)
+  "Extra Par2 Parameters" are also passed to MultiPar
+  For example: Set "/lc32" to enable GPU for repair (can also be slower!)
+- Minimal macOS version set to 10.9 (Mavericks)
+- Human readable history date/time default setting in Glitter (x hours ago, etc)
+- Post-processing script execution can be aborted
+- Removed Specials settings: never_repair, nr_decoders, prio_sort_list,
+  create_group_folder, enable_par_cleanup, enable_quickcheck, allow_64bit_tools
 
-## Changes:
-- Python post/pre/notification-scripts now require execute (+x) permissions
-- Dropped dependency on PyOpenSSL, now only requires cryptography package
-- Update 7zip to 16.04 and UnRar to 5.40 for Windows/macOS
-- Update Python to 2.7.13 on Windows and macOS binaries
-- CherryPy logging only enabled when forced via command line
-- Not having C yEnc module will trigger warning on startup
+# Bugfixes
+- File join would fail incorrectly
+- Catch and show 'Disk full' messages from PAR2/MultiPar
+- MemoryError occurred when opening the interface after long period of inactivity
 
-## Bug fixes
-- Re-use IP-address for new connections when a server has open connections
-- Auto-disables CPU-usage optimizations if they result in slowdown
-- no_penalties now applies to all types of penalties
-- par2cmdline would fail jobs in folders ending on ".par2"
-- Fix problem where memory usage wasn't correctly limited, causing MemoryError's
-- Removing files from active download was not working correctly
-- Accept & fail for pre-queue script was not working correctly
-- Recursive unpack failed on Windows with very long paths
-- Problems loading Notifications page with Scripts Folder set
-
-## Translations
-- Many translations updated, thanks to our translators!
-
-## About
-  SABnzbd is an open-source cross-platform binary newsreader.
-  It simplifies the process of downloading from Usenet dramatically,
-  thanks to its web-based user interface and advanced
-  built-in post-processing options that automatically verify, repair,
-  extract and clean up posts downloaded from Usenet.
-
-  (c) Copyright 2007-2017 by "The SABnzbd-team" \<team@sabnzbd.org\>
-
-### IMPORTANT INFORMATION about release 1.x.x
-<https://sabnzbd.org/wiki/new-features-and-changes>
-
-### Known problems and solutions
-- Read the file "ISSUES.txt"
-
-### Upgrading from 0.7.x and older
+## Upgrading from 0.7.x and older
 - Finish queue
 - Stop SABnzbd
 - Install new version
 - Start SABnzbd
 
-The organization of the download queue is different from older versions.
-1.x.x will not see the existing queue, but you can go to
-Status->QueueRepair and "Repair" the old queue.
-Also, your sabnzbd.ini file will be upgraded, making it
-incompatible with releases older than 0.7.9
+## Upgrade notices (from pre-2.x.x)
+- Windows: When starting the Post-Processing script, the path to the job folder
+  is no longer in short-path notation but includes the full path. To support
+  long paths (>255), you might need to alter them to long-path notation (\\?\).
+- Schedule items are converted when upgrading to 2.x.x and will break when
+  reverted back to pre-2.x.x releases.
+- The organization of the download queue is different from 0.7.x releases.
+  So 2.x.x will not see the existing queue, but you can go to Status->Queue Repair
+  and "Repair" the old queue.
+
+## Known problems and solutions
+- Read the file "ISSUES.txt"
+
+## About
+  SABnzbd is an open-source cross-platform binary newsreader.
+  It simplifies the process of downloading from Usenet dramatically, thanks
+  to its web-based user interface and advanced built-in post-processing options
+  that automatically verify, repair, extract and clean up posts downloaded
+  from Usenet.
+
+  (c) Copyright 2007-2017 by "The SABnzbd-team" \<team@sabnzbd.org\>

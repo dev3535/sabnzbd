@@ -26,16 +26,11 @@ import struct
 import re
 from threading import Thread
 from time import sleep
-try:
-    import hashlib
-    new_md5 = hashlib.md5
-except:
-    import md5
-    new_md5 = md5.new
+import hashlib
 
 import sabnzbd
 from sabnzbd.misc import get_filepath, sanitize_filename, get_unique_filename, renamer, \
-    set_permissions, flag_file, long_path, clip_path, get_all_passwords, short_path
+    set_permissions, flag_file, long_path, clip_path, has_win_device, get_all_passwords
 from sabnzbd.constants import QCHECK_FILE, Status
 import sabnzbd.cfg as cfg
 from sabnzbd.articlecache import ArticleCache
@@ -65,7 +60,6 @@ class Assembler(Thread):
         self.queue.put(job)
 
     def run(self):
-        import sabnzbd.nzbqueue
         while 1:
             job = self.queue.get()
             if not job:
@@ -76,7 +70,8 @@ class Assembler(Thread):
 
             if nzf:
                 sabnzbd.CheckFreeSpace()
-                filename = sanitize_filename(nzf.filename)
+                # We allow win_devices because otherwise par2cmdline fails to repair
+                filename = sanitize_filename(nzf.filename, allow_win_devices=True)
                 nzf.filename = filename
 
                 dupe = nzo.check_for_dupe(nzf)
@@ -88,10 +83,8 @@ class Assembler(Thread):
                     try:
                         filepath = _assemble(nzf, filepath, dupe)
                     except IOError, (errno, strerror):
-                        if nzo.is_gone():
-                            # Job was deleted, ignore error
-                            pass
-                        else:
+                        # If job was deleted, ignore error
+                        if not nzo.is_gone():
                             # 28 == disk full => pause downloader
                             if errno == 28:
                                 logging.error(T('Disk full! Forcing Pause'))
@@ -99,6 +92,7 @@ class Assembler(Thread):
                                 logging.error(T('Disk error on creating file %s'), clip_path(filepath))
                             # Pause without saving
                             sabnzbd.downloader.Downloader.do.pause(save=False)
+                        continue
                     except:
                         logging.error(T('Fatal error in Assembler'), exc_info=True)
                         break
@@ -110,6 +104,11 @@ class Assembler(Thread):
                         if pack:
                             nzo.md5packs[setname] = pack
                             logging.debug('Got md5pack for set %s', setname)
+                            # Valid md5pack, so use this par2-file as main par2 file for the set
+                            if setname in nzo.partable:
+                                # First copy the set of extrapars, we need them later
+                                nzf.extrapars = nzo.partable[setname].extrapars
+                                nzo.partable[setname] = nzf
 
                     rar_encrypted, unwanted_file = check_encrypted_and_unwanted_files(nzo, filepath)
                     if rar_encrypted:
@@ -119,7 +118,6 @@ class Assembler(Thread):
                         else:
                             logging.warning(T('WARNING: Aborted job "%s" because of encrypted RAR file (if supplied, all passwords were tried)'), nzo.final_name)
                             nzo.fail_msg = T('Aborted, encryption detected')
-                            import sabnzbd.nzbqueue
                             sabnzbd.nzbqueue.NzbQueue.do.end_job(nzo)
 
                     if unwanted_file:
@@ -132,7 +130,6 @@ class Assembler(Thread):
                         if cfg.action_on_unwanted_extensions() == 2:
                             logging.debug('Unwanted extension ... aborting')
                             nzo.fail_msg = T('Aborted, unwanted extension detected')
-                            import sabnzbd.nzbqueue
                             sabnzbd.nzbqueue.NzbQueue.do.end_job(nzo)
 
                     filter, reason = nzo_filtered_by_rating(nzo)
@@ -142,7 +139,6 @@ class Assembler(Thread):
                     elif filter == 2:
                         logging.warning(Ta('WARNING: Aborted job "%s" because of rating (%s)'), nzo.final_name, reason)
                         nzo.fail_msg = T('Aborted, rating filter matched (%s)') % reason
-                        import sabnzbd.nzbqueue
                         sabnzbd.nzbqueue.NzbQueue.do.end_job(nzo)
 
                     nzf.completed = True
@@ -159,13 +155,8 @@ def _assemble(nzf, path, dupe):
         else:
             renamer(path, unique_path)
 
+    md5 = hashlib.md5()
     fout = open(path, 'ab')
-
-    if cfg.quick_check():
-        md5 = new_md5()
-    else:
-        md5 = None
-
     decodetable = nzf.decodetable
 
     for articlenum in decodetable:
@@ -174,7 +165,7 @@ def _assemble(nzf, path, dupe):
             break
 
         # Sleep to allow decoder/assembler switching
-        sleep(0.001)
+        sleep(0.0001)
         article = decodetable[articlenum]
 
         data = ArticleCache.do.load_article(article)
@@ -184,15 +175,13 @@ def _assemble(nzf, path, dupe):
         else:
             # yenc data already decoded, flush it out
             fout.write(data)
-            if md5:
-                md5.update(data)
+            md5.update(data)
 
     fout.flush()
     fout.close()
     set_permissions(path)
-    if md5:
-        nzf.md5sum = md5.digest()
-        del md5
+    nzf.md5sum = md5.digest()
+    del md5
 
     return path
 
@@ -267,7 +256,7 @@ def ParseFilePacket(f, header):
 
     # Read and check the data
     data = f.read(len - 32)
-    md5 = new_md5()
+    md5 = hashlib.md5()
     md5.update(data)
     if md5sum != md5.digest():
         return nothing
@@ -291,7 +280,7 @@ def ParseFilePacket(f, header):
 
 
 RE_SUBS = re.compile(r'\W+sub|subs|subpack|subtitle|subtitles(?![a-z])', re.I)
-def is_cloaked(path, names):
+def is_cloaked(nzo, path, names):
     """ Return True if this is likely to be a cloaked encrypted post """
     fname = unicoder(os.path.split(path)[1]).lower()
     fname = os.path.splitext(fname)[0]
@@ -299,10 +288,16 @@ def is_cloaked(path, names):
         name = os.path.split(name.lower())[1]
         name, ext = os.path.splitext(unicoder(name))
         if ext == u'.rar' and fname.startswith(name) and (len(fname) - len(name)) < 8 and len(names) < 3 and not RE_SUBS.search(fname):
-            logging.debug('File %s is probably encrypted due to RAR with same name inside this RAR', fname)
+            # Only warn once
+            if nzo.encrypted == 0:
+                logging.warning(T('Job "%s" is probably encrypted due to RAR with same name inside this RAR'), nzo.final_name)
+                nzo.encrypted = 1
             return True
         elif 'password' in name:
-            logging.debug('RAR %s is probably encrypted: "password" in filename %s', fname, name)
+            # Only warn once
+            if nzo.encrypted == 0:
+                logging.warning(T('Job "%s" is probably encrypted: "password" in filename "%s"'), nzo.final_name, name)
+                nzo.encrypted = 1
             return True
     return False
 
@@ -312,24 +307,29 @@ def check_encrypted_and_unwanted_files(nzo, filepath):
     encrypted = False
     unwanted = None
 
-    if cfg.unwanted_extensions() or (nzo.encrypted == 0 and cfg.pause_on_pwrar()):
-        # Safe-format for Windows
-        # RarFile requires de-unicoded filenames for zf.testrar()
-        filepath_split = os.path.split(filepath)
-        workdir_short = short_path(filepath_split[0])
-        filepath = deunicode(os.path.join(workdir_short, filepath_split[1]))
+    if (cfg.unwanted_extensions() and cfg.action_on_unwanted_extensions()) or (nzo.encrypted == 0 and cfg.pause_on_pwrar()):
+        # These checks should not break the assembler
+        try:
+            # Rarfile freezes on Windows special names, so don't try those!
+            if sabnzbd.WIN32 and has_win_device(filepath):
+                return encrypted, unwanted
 
-        # Is it even a rarfile?
-        if rarfile.is_rarfile(filepath):
-            try:
+            # Is it even a rarfile?
+            if rarfile.is_rarfile(filepath):
+                # Open the rar
+                rarfile.UNRAR_TOOL = sabnzbd.newsunpack.RAR_COMMAND
                 zf = rarfile.RarFile(filepath, all_names=True)
+
                 # Check for encryption
-                if nzo.encrypted == 0 and cfg.pause_on_pwrar() and (zf.needs_password() or is_cloaked(filepath, zf.namelist())):
+                if nzo.encrypted == 0 and cfg.pause_on_pwrar() and (zf.needs_password() or is_cloaked(nzo, filepath, zf.namelist())):
                     # Load all passwords
                     passwords = get_all_passwords(nzo)
 
-                    # if no cryptography installed, only error when no password was set
-                    if not sabnzbd.HAVE_CRYPTOGRAPHY and not passwords:
+                    # Cloaked job?
+                    if is_cloaked(nzo, filepath, zf.namelist()):
+                        encrypted = True
+                    elif not sabnzbd.HAVE_CRYPTOGRAPHY and not passwords:
+                        # if no cryptography installed, only error when no password was set
                         logging.info(T('%s missing'), 'Python Cryptography')
                         nzo.encrypted = 1
                         encrypted = True
@@ -337,13 +337,17 @@ def check_encrypted_and_unwanted_files(nzo, filepath):
                     elif sabnzbd.HAVE_CRYPTOGRAPHY:
                         # Lets test if any of the password work
                         password_hit = False
-                        rarfile.UNRAR_TOOL = sabnzbd.newsunpack.RAR_COMMAND
 
                         for password in passwords:
                             if password:
                                 logging.info('Trying password "%s" on job "%s"', password, nzo.final_name)
                                 try:
                                     zf.setpassword(password)
+                                except:
+                                    # On weird passwords the setpassword() will fail
+                                    # but the actual rartest() will work
+                                    pass
+                                try:
                                     zf.testrar()
                                     password_hit = password
                                     break
@@ -351,7 +355,11 @@ def check_encrypted_and_unwanted_files(nzo, filepath):
                                     # On CRC error we can continue!
                                     password_hit = password
                                     break
-                                except:
+                                except Exception as e:
+                                    # Did we start from the right volume?
+                                    if 'need to start extraction from a previous volume' in e[0]:
+                                        return encrypted, unwanted
+                                    # This one failed
                                     pass
 
                         # Did any work?
@@ -370,17 +378,16 @@ def check_encrypted_and_unwanted_files(nzo, filepath):
                         encrypted = False
 
                 # Check for unwanted extensions
-                if cfg.unwanted_extensions():
+                if cfg.unwanted_extensions() and cfg.action_on_unwanted_extensions():
                     for somefile in zf.namelist():
                         logging.debug('File contains: %s', somefile)
                         if os.path.splitext(somefile)[1].replace('.', '').lower() in cfg.unwanted_extensions():
                             logging.debug('Unwanted file %s', somefile)
                             unwanted = somefile
-                            zf.close()
                 zf.close()
                 del zf
-            except:
-                logging.debug('RAR file %s cannot be inspected', filepath)
+        except:
+            logging.info('Error during inspection of RAR-file %s', filepath, exc_info=True)
 
     return encrypted, unwanted
 

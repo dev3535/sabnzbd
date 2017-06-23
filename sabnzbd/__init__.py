@@ -43,7 +43,7 @@ except ImportError:
 ##############################################################################
 # Determine platform flags
 ##############################################################################
-WIN32 = DARWIN = DARWIN_INTEL = POSIX = FOUNDATION = WIN64 = False
+WIN32 = DARWIN = POSIX = FOUNDATION = WIN64 = False
 KERNEL32 = None
 
 if os.name == 'nt':
@@ -61,42 +61,30 @@ elif os.name == 'posix':
     import platform
     if platform.system().lower() == 'darwin':
         DARWIN = True
+        # 12 = Sierra, 11 = ElCaptain, 10 = Yosemite, 9 = Mavericks, 8 = MountainLion
+        DARWIN_VERSION = int(platform.mac_ver()[0].split('.')[1])
         try:
             import Foundation
             FOUNDATION = True
         except:
             pass
-        if '86' in platform.machine():
-            DARWIN_INTEL = True
 
-if DARWIN:
-    # 10 = Yosemite, 9 = Mavericks, 8 = MountainLion, 7 = Lion, 6 = SnowLeopard, 5 = Leopard
-    DARWIN_VERSION = int(platform.mac_ver()[0].split('.')[1])
-    DARWIN_64 = platform.mac_ver()[2] == 'x86_64'
-else:
-    DARWIN_VERSION = 0
 
 ##############################################################################
 # SSL CHECKS
 ##############################################################################
+import ssl
 HAVE_SSL_CONTEXT = None
-HAVE_SSL = None
 try:
-    import ssl
-    HAVE_SSL = True
-    try:
-        # Test availability of SSLContext (python 2.7.9+)
-        ssl.SSLContext
-        HAVE_SSL_CONTEXT = True
-    except:
-        HAVE_SSL_CONTEXT = False
+    # Test availability of SSLContext (python 2.7.9+)
+    ssl.SSLContext
+    HAVE_SSL_CONTEXT = True
 except:
-    HAVE_SSL = False
     HAVE_SSL_CONTEXT = False
 
 try:
     import cryptography
-    HAVE_CRYPTOGRAPHY = True
+    HAVE_CRYPTOGRAPHY = cryptography.__version__
 except:
     HAVE_CRYPTOGRAPHY = False
 
@@ -134,7 +122,7 @@ START = datetime.datetime.now()
 MY_NAME = None
 MY_FULLNAME = None
 RESTART_ARGS = []
-NEW_VERSION = None
+NEW_VERSION = (None, None)
 DIR_HOME = None
 DIR_APPDATA = None
 DIR_LCLDATA = None
@@ -160,11 +148,9 @@ BROWSER_URL = None
 CMDLINE = ''  # Rendering of original command line arguments
 
 WEB_DIR = None
-WEB_DIR2 = None
-WEB_DIRC = None
+WEB_DIR_CONFIG = None
 WIZARD_DIR = None
 WEB_COLOR = None
-WEB_COLOR2 = None
 SABSTOP = False
 RESTART_REQ = False
 PAUSED_ALL = False
@@ -176,6 +162,11 @@ LAST_WARNING = None
 LAST_ERROR = None
 EXTERNAL_IPV6 = False
 LAST_HISTORY_UPDATE = time.time()
+
+# Performance measure for dashboard
+PYSTONE_SCORE = 0
+DOWNLOAD_DIR_SPEED = 0
+COMPLETE_DIR_SPEED = 0
 
 __INITIALIZED__ = False
 __SHUTTING_DOWN__ = False
@@ -218,7 +209,6 @@ def connect_db(thread_index=0):
     if not (hasattr(cherrypy.thread_data, 'history_db') and cherrypy.thread_data.history_db):
         cherrypy.thread_data.history_db = sabnzbd.database.HistoryDB()
     return cherrypy.thread_data.history_db
-
 
 
 @synchronized(INIT_LOCK)
@@ -266,9 +256,7 @@ def initialize(pause_downloader=False, clean_up=False, evalSched=False, repair=0
     cfg.cherryhost.callback(guard_restart)
     cfg.cherryport.callback(guard_restart)
     cfg.web_dir.callback(guard_restart)
-    cfg.web_dir2.callback(guard_restart)
     cfg.web_color.callback(guard_restart)
-    cfg.web_color2.callback(guard_restart)
     cfg.username.callback(guard_restart)
     cfg.password.callback(guard_restart)
     cfg.log_dir.callback(guard_restart)
@@ -292,9 +280,8 @@ def initialize(pause_downloader=False, clean_up=False, evalSched=False, repair=0
     sabnzbd.encoding.change_fsys(cfg.fsys_type())
 
     # Set cache limit
-    if sabnzbd.WIN32 or sabnzbd.DARWIN:
-        if cfg.cache_limit() == '' or cfg.cache_limit() == '200M':
-            cfg.cache_limit.set('450M')
+    if not cfg.cache_limit() or (cfg.cache_limit() == '200M' and (sabnzbd.WIN32 or sabnzbd.DARWIN)):
+        cfg.cache_limit.set(misc.get_cache_limit())
     ArticleCache.do.new_limit(cfg.cache_limit.get_int())
 
     check_incomplete_vs_complete()
@@ -318,8 +305,12 @@ def initialize(pause_downloader=False, clean_up=False, evalSched=False, repair=0
             else:
                 newsched.append(sched)
         cfg.schedules.set(newsched)
-        cfg.sched_converted.set(True)
+        cfg.sched_converted.set(1)
 
+    # Second time schedule conversion
+    if cfg.sched_converted() != 2:
+        cfg.schedules.set(['%s %s' % (1, schedule) for schedule in cfg.schedules()])
+        cfg.sched_converted.set(2)
 
     if check_repair_request():
         repair = 2
@@ -443,7 +434,6 @@ def halt():
         except:
             logging.error(T('Fatal error at saving state'), exc_info=True)
 
-
         # The Scheduler cannot be stopped when the stop was scheduled.
         # Since all warm-restarts have been removed, it's not longer
         # needed to stop the scheduler.
@@ -455,8 +445,13 @@ def halt():
         __INITIALIZED__ = False
 
 
-def trigger_restart():
+def trigger_restart(timeout=None):
     """ Trigger a restart by setting a flag an shutting down CP """
+    # Sometimes we need to wait a bit to send good-bye to the browser
+    if timeout:
+        time.sleep(timeout)
+
+    # Add extra arguments
     if sabnzbd.downloader.Downloader.do.paused:
         sabnzbd.RESTART_ARGS.append('-p')
     sys.argv = sabnzbd.RESTART_ARGS
@@ -518,6 +513,7 @@ def guard_quota_dp():
 def guard_fsys_type():
     """ Callback for change of file system naming type """
     sabnzbd.encoding.change_fsys(cfg.fsys_type())
+
 
 def set_https_verification(value):
     prev = False
@@ -609,7 +605,7 @@ def save_compressed(folder, filename, data):
     # Need to go to the save folder to
     # prevent the pathname being embedded in the GZ file
     here = os.getcwd()
-    os.chdir(misc.short_path(folder))
+    os.chdir(folder)
 
     if filename.endswith('.nzb'):
         filename += '.gz'
@@ -858,7 +854,7 @@ def keep_awake():
 def CheckFreeSpace():
     """ Check if enough disk space is free, if not pause downloader and send email """
     if cfg.download_free() and not sabnzbd.downloader.Downloader.do.paused:
-        if misc.diskfree(cfg.download_dir.get_path()) < cfg.download_free.get_float() / GIGI:
+        if misc.diskspace(cfg.download_dir.get_path(), force=True)[1] < cfg.download_free.get_float() / GIGI:
             logging.warning(T('Too little diskspace forcing PAUSE'))
             # Pause downloader, but don't save, since the disk is almost full!
             Downloader.do.pause(save=False)
@@ -897,25 +893,25 @@ def save_data(data, _id, path, do_pickle=True, silent=False):
         logging.debug("Saving data for %s in %s", _id, path)
     path = os.path.join(path, _id)
 
-    try:
-        _f = open(path, 'wb')
-        if do_pickle:
-            if cfg.use_pickle():
-                pickler = pickle.Pickler(_f, 2)
+    # We try 3 times, to avoid any dict or access problems
+    for t in xrange(3):
+        try:
+            with open(path, 'wb') as data_file:
+                if do_pickle:
+                    if cfg.use_pickle():
+                        cPickle.dump(data, data_file)
+                    else:
+                        pickle.dump(data, data_file)
+                else:
+                    data_file.write(data)
+            break
+        except:
+            if t == 2:
+                logging.error(T('Saving %s failed'), path)
+                logging.info("Traceback: ", exc_info=True)
             else:
-                pickler = cPickle.Pickler(_f, 2)
-            pickler.dump(data)
-            _f.flush()
-            _f.close()
-            pickler.clear_memo()
-            del pickler
-        else:
-            _f.write(data)
-            _f.flush()
-            _f.close()
-    except:
-        logging.error(T('Saving %s failed'), path)
-        logging.info("Traceback: ", exc_info=True)
+                # Wait a tiny bit before trying again
+                time.sleep(0.1)
 
 
 @synchronized(IO_LOCK)
@@ -931,15 +927,14 @@ def load_data(_id, path, remove=True, do_pickle=True, silent=False):
         logging.debug("Loading data for %s from %s", _id, path)
 
     try:
-        _f = open(path, 'rb')
-        if do_pickle:
-            if cfg.use_pickle():
-                data = pickle.load(_f)
+        with open(path, 'rb') as data_file:
+            if do_pickle:
+                if cfg.use_pickle():
+                    data = pickle.load(data_file)
+                else:
+                    data = cPickle.load(data_file)
             else:
-                data = cPickle.load(_f)
-        else:
-            data = _f.read()
-        _f.close()
+                data = data_file.read()
 
         if remove:
             os.remove(path)
@@ -964,31 +959,31 @@ def remove_data(_id, path):
 
 
 @synchronized(IO_LOCK)
-def save_admin(data, _id, do_pickle=True):
+def save_admin(data, _id):
     """ Save data in admin folder in specified format """
     path = os.path.join(cfg.admin_dir.get_path(), _id)
     logging.info("Saving data for %s in %s", _id, path)
 
-    try:
-        _f = open(path, 'wb')
-        if do_pickle:
-            pickler = cPickle.Pickler(_f, 2)
-            pickler.dump(data)
-            _f.flush()
-            _f.close()
-            pickler.clear_memo()
-            del pickler
-        else:
-            _f.write(data)
-            _f.flush()
-            _f.close()
-    except:
-        logging.error(T('Saving %s failed'), path)
-        logging.info("Traceback: ", exc_info=True)
+    # We try 3 times, to avoid any dict or access problems
+    for t in xrange(3):
+        try:
+            with open(path, 'wb') as data_file:
+                if cfg.use_pickle():
+                    data = pickle.dump(data, data_file)
+                else:
+                    data = cPickle.dump(data, data_file)
+            break
+        except:
+            if t == 2:
+                logging.error(T('Saving %s failed'), path)
+                logging.info("Traceback: ", exc_info=True)
+            else:
+                # Wait a tiny bit before trying again
+                time.sleep(0.1)
 
 
 @synchronized(IO_LOCK)
-def load_admin(_id, remove=False, do_pickle=True, silent=False):
+def load_admin(_id, remove=False, silent=False):
     """ Read data in admin folder in specified format """
     path = os.path.join(cfg.admin_dir.get_path(), _id)
     logging.info("Loading data for %s from %s", _id, path)
@@ -998,13 +993,11 @@ def load_admin(_id, remove=False, do_pickle=True, silent=False):
         return None
 
     try:
-        f = open(path, 'rb')
-        if do_pickle:
-            data = cPickle.load(f)
-        else:
-            data = f.read()
-        f.close()
-
+        with open(path, 'rb') as data_file:
+            if cfg.use_pickle():
+                data = pickle.load(data_file)
+            else:
+                data = cPickle.load(data_file)
         if remove:
             os.remove(path)
     except:
@@ -1153,11 +1146,12 @@ def wait_for_download_folder():
         logging.debug('Waiting for "incomplete" folder')
         time.sleep(2.0)
 
+
 def check_old_queue():
     """ Check for old queue (when a new queue is not present) """
     old = False
     if not os.path.exists(os.path.join(cfg.admin_dir.get_path(), QUEUE_FILE_NAME)):
-        for ver in (QUEUE_VERSION -1 , QUEUE_VERSION - 2, QUEUE_VERSION - 3):
+        for ver in (QUEUE_VERSION - 1, QUEUE_VERSION - 2, QUEUE_VERSION - 3):
             data = load_admin(QUEUE_FILE_TMPL % str(ver))
             if data:
                 break
@@ -1165,8 +1159,7 @@ def check_old_queue():
             old = bool(data and isinstance(data, tuple) and len(data[1]))
         except (TypeError, IndexError):
             pass
-        if old and sabnzbd.WIN32 and ver < 10 and sabnzbd.DIR_LCLDATA != sabnzbd.DIR_HOME \
-            and misc.is_relative_path(cfg.download_dir()):
+        if old and sabnzbd.WIN32 and ver < 10 and sabnzbd.DIR_LCLDATA != sabnzbd.DIR_HOME and misc.is_relative_path(cfg.download_dir()):
             # For Windows and when version < 10: adjust old default location
             cfg.download_dir.set('Documents/' + cfg.download_dir())
     return old

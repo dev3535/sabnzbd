@@ -265,6 +265,11 @@ function do_restart() {
 
             // Now we try untill we can connect
             var refreshInterval = setInterval(function() {
+                // We skip the first one
+                if(failureCounter == 0) {
+                    failureCounter = failureCounter+1;
+                    return
+                }
                 $.ajax({ url: urlTotal,
                     success: function() {
                         // Back to base
@@ -273,7 +278,7 @@ function do_restart() {
                     error: function(status, text) {
                         failureCounter = failureCounter+1;
                         // Too many failuers and we give up
-                        if(failureCounter >= 7) {
+                        if(failureCounter >= 6) {
                             // If the port has changed 'Access-Control-Allow-Origin' header will not allow
                             // us to check if the server is back up. So after 7 failures we redirect
                             // anyway in the hopes it works anyway..
@@ -281,7 +286,7 @@ function do_restart() {
                         }
                     }
                 })
-            }, 3000)
+            }, 4000)
 
             // Exception if we go from HTTPS to HTTP
             // (this is not allowed by browsers and all of the above will be ignored)
@@ -402,7 +407,12 @@ $(document).ready(function () {
 
     // Hide or show HTTPS
     $('#enable_https').on('change', function() {
-        $('#enable_https_options').toggle()
+        $('.enable_https_options').toggle()
+    })
+
+    $('.advancedButton').click(function(event){
+        $('.advanced-settings').toggle()
+        return false;
     })
 });
 

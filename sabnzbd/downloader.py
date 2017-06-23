@@ -27,9 +27,11 @@ from nntplib import NNTPPermanentError
 import socket
 import random
 import sys
+import Queue
 
 import sabnzbd
 from sabnzbd.decorators import synchronized, synchronized_CV, CV
+from sabnzbd.constants import MAX_DECODE_QUEUE, LIMIT_DECODE_QUEUE
 from sabnzbd.decoder import Decoder
 from sabnzbd.newswrapper import NewsWrapper, request_server_info
 from sabnzbd.articlecache import ArticleCache
@@ -38,7 +40,7 @@ import sabnzbd.config as config
 import sabnzbd.cfg as cfg
 from sabnzbd.bpsmeter import BPSMeter
 import sabnzbd.scheduler
-from sabnzbd.misc import from_units
+from sabnzbd.misc import from_units, nntp_to_msg
 from sabnzbd.utils.happyeyeballs import happyeyeballs
 
 
@@ -88,7 +90,7 @@ class Server(object):
         self.errormsg = ''
         self.warning = ''
         self.info = None     # Will hold getaddrinfo() list
-        self.ssl_info = '' # Will hold the type and cipher of SSL connection
+        self.ssl_info = ''  # Will hold the type and cipher of SSL connection
         self.request = False  # True if a getaddrinfo() request is pending
         self.have_body = 'free.xsusenet.com' not in host
         self.have_stat = True  # Assume server has "STAT", until proven otherwise
@@ -105,7 +107,7 @@ class Server(object):
             2 - and self.info has more than 1 entry (read: IP address): Return the quickest IP based on the happyeyeballs algorithm
             In case of problems: return the host name itself
         """
-        # Check if already a succesfull ongoing connection
+        # Check if already a successful ongoing connection
         if self.busy_threads and self.busy_threads[0].nntp:
             # Re-use that IP
             logging.debug('%s: Re-using address %s', self.host, self.busy_threads[0].nntp.host)
@@ -196,7 +198,14 @@ class Downloader(Thread):
         for server in config.get_servers():
             self.init_server(None, server)
 
-        self.decoder = Decoder(self.servers)
+        self.decoder_queue = Queue.Queue()
+
+        # Initialize decoders, only 1 for non-SABYenc
+        self.decoder_workers = []
+        nr_decoders = 2 if sabnzbd.decoder.SABYENC_ENABLED else 1
+        for i in range(nr_decoders):
+            self.decoder_workers.append(Decoder(self.servers, self.decoder_queue))
+
         Downloader.do = self
 
     def init_server(self, oldserver, newserver):
@@ -217,7 +226,7 @@ class Downloader(Thread):
             timeout = srv.timeout()
             threads = srv.connections()
             priority = srv.priority()
-            ssl = srv.ssl() and sabnzbd.HAVE_SSL
+            ssl = srv.ssl()
             ssl_verify = srv.ssl_verify()
             username = srv.username()
             password = srv.password()
@@ -261,7 +270,6 @@ class Downloader(Thread):
         """ Pause the downloader, optionally saving admin """
         if not self.paused:
             self.paused = True
-            self.can_be_slowed = None
             logging.info("Pausing")
             notifier.send_notification("SABnzbd", T('Paused'), 'download')
             if self.is_paused():
@@ -318,7 +326,6 @@ class Downloader(Thread):
         else:
             self.speed_set()
         logging.info("Speed limit set to %s B/s", self.bandwidth_limit)
-        self.can_be_slowed = None
 
     def get_limit(self):
         return self.bandwidth_perc
@@ -376,6 +383,14 @@ class Downloader(Thread):
 
             sabnzbd.nzbqueue.NzbQueue.do.reset_all_try_lists()
 
+    def decode(self, article, lines, raw_data):
+        self.decoder_queue.put((article, lines, raw_data))
+        # See if there's space left in cache, pause otherwise
+        # But do allow some articles to enter queue, in case of full cache
+        qsize = self.decoder_queue.qsize()
+        if (not ArticleCache.do.reserve_space(lines) and qsize > MAX_DECODE_QUEUE) or (qsize > LIMIT_DECODE_QUEUE):
+            sabnzbd.downloader.Downloader.do.delay()
+
     def run(self):
         # First check IPv6 connectivity
         sabnzbd.EXTERNAL_IPV6 = sabnzbd.test_ipv6()
@@ -397,8 +412,9 @@ class Downloader(Thread):
                 sabnzbd.HAVE_SSL_CONTEXT = False
         logging.debug('SSL verification test: %s', sabnzbd.HAVE_SSL_CONTEXT)
 
-        # Start decoder
-        self.decoder.start()
+        # Start decoders
+        for decoder in self.decoder_workers:
+            decoder.start()
 
         # Kick BPS-Meter to check quota
         BPSMeter.do.update()
@@ -433,7 +449,7 @@ class Downloader(Thread):
                 if not server.idle_threads or server.restart or self.is_paused() or self.shutdown or self.delayed or self.postproc:
                     continue
 
-                if not (server.active and sabnzbd.nzbqueue.NzbQueue.do.has_articles_for(server)):
+                if not server.active:
                     continue
 
                 for nw in server.idle_threads[:]:
@@ -443,9 +459,6 @@ class Downloader(Thread):
                             continue
                         else:
                             nw.timeout = None
-
-                    if not server.active:
-                        break
 
                     if server.info is None:
                         self.maybe_block_server(server)
@@ -461,7 +474,7 @@ class Downloader(Thread):
                         # Article too old for the server, treat as missing
                         if sabnzbd.LOG_ALL:
                             logging.debug('Article %s too old for %s', article.article, server.id)
-                        self.decoder.decode(article, None)
+                        self.decode(article, None, None)
                         break
 
                     server.idle_threads.remove(nw)
@@ -473,8 +486,7 @@ class Downloader(Thread):
                         self.__request_article(nw)
                     else:
                         try:
-                            logging.info("%s@%s: Initiating connection",
-                                              nw.thrdnum, server.id)
+                            logging.info("%s@%s: Initiating connection", nw.thrdnum, server.id)
                             nw.init_connect(self.write_fds)
                         except:
                             logging.error(T('Failed to initialize %s@%s with reason: %s'), nw.thrdnum, server.id, sys.exc_info()[1])
@@ -489,8 +501,10 @@ class Downloader(Thread):
                         break
 
                 if empty:
-                    self.decoder.stop()
-                    self.decoder.join()
+                    # Start decoders
+                    for decoder in self.decoder_workers:
+                        decoder.stop()
+                        decoder.join()
 
                     for server in self.servers:
                         server.stop(self.read_fds, self.write_fds)
@@ -515,17 +529,17 @@ class Downloader(Thread):
             if readkeys or writekeys:
                 read, write, error = select.select(readkeys, writekeys, (), 1.0)
 
-                # Why check so often when so few things happend?
+                # Why check so often when so few things happened?
                 if self.can_be_slowed and len(readkeys) >= 8 and len(read) <= 2:
                     time.sleep(0.01)
 
-                # Need to initalize the check during first 20 seconds
+                # Need to initialize the check during first 20 seconds
                 if self.can_be_slowed is None or self.can_be_slowed_timer:
                     # Wait for stable speed to start testing
                     if not self.can_be_slowed_timer and BPSMeter.do.get_stable_speed(timespan=10):
                         self.can_be_slowed_timer = time.time()
 
-                    # Check 10 seconds after enabeling slowdown
+                    # Check 10 seconds after enabling slowdown
                     if self.can_be_slowed_timer and time.time() > self.can_be_slowed_timer + 10:
                         # Now let's check if it was stable in the last 10 seconds
                         self.can_be_slowed = (BPSMeter.do.get_stable_speed(timespan=10) > 0)
@@ -597,17 +611,15 @@ class Downloader(Thread):
                     if nzo:
                         nzo.update_download_stats(BPSMeter.do.get_bps(), server.id, bytes)
 
-                if len(nw.lines) == 1:
-                    code = nw.lines[0][:3]
-                    if not nw.connected or code == '480':
+                if not done and nw.status_code != '222':
+                    if not nw.connected or nw.status_code == '480':
                         done = False
 
                         try:
-                            nw.finish_connect(code)
+                            nw.finish_connect(nw.status_code)
                             if sabnzbd.LOG_ALL:
-                                logging.debug("%s@%s last message -> %s", nw.thrdnum, nw.server.id, nw.lines[0])
-                            nw.lines = []
-                            nw.data = ''
+                                logging.debug("%s@%s last message -> %s", nw.thrdnum, nw.server.id, nntp_to_msg(nw.data))
+                            nw.clear_data()
                         except NNTPPermanentError, error:
                             # Handle login problems
                             block = False
@@ -681,7 +693,7 @@ class Downloader(Thread):
                             continue
                         except:
                             logging.error(T('Connecting %s@%s failed, message=%s'),
-                                              nw.thrdnum, nw.server.id, nw.lines[0])
+                                              nw.thrdnum, nw.server.id, nntp_to_msg(nw.data))
                             # No reset-warning needed, above logging is sufficient
                             self.__reset_nw(nw, None, warn=False)
 
@@ -689,30 +701,24 @@ class Downloader(Thread):
                             logging.info("Connecting %s@%s finished", nw.thrdnum, nw.server.id)
                             self.__request_article(nw)
 
-                    elif code == '223':
+                    elif nw.status_code == '223':
                         done = True
                         logging.debug('Article <%s> is present', article.article)
-                        self.decoder.decode(article, nw.lines)
 
-                    elif code == '211':
+                    elif nw.status_code == '211':
                         done = False
-
-                        logging.debug("group command ok -> %s",
-                                      nw.lines)
+                        logging.debug("group command ok -> %s", nntp_to_msg(nw.data))
                         nw.group = nw.article.nzf.nzo.group
-                        nw.lines = []
-                        nw.data = ''
+                        nw.clear_data()
                         self.__request_article(nw)
 
-                    elif code in ('411', '423', '430'):
+                    elif nw.status_code in ('411', '423', '430'):
                         done = True
-                        nw.lines = None
+                        logging.info('Thread %s@%s: Article %s missing (error=%s)',
+                                        nw.thrdnum, nw.server.id, article.article, nw.status_code)
+                        nw.clear_data()
 
-                        logging.info('Thread %s@%s: Article ' +
-                                        '%s missing (error=%s)',
-                                        nw.thrdnum, nw.server.id, article.article, code)
-
-                    elif code == '480':
+                    elif nw.status_code == '480':
                         if server.active:
                             server.active = False
                             server.errormsg = T('Server %s requires user/password') % ''
@@ -721,7 +727,7 @@ class Downloader(Thread):
                         msg = T('Server %s requires user/password') % nw.server.id
                         self.__reset_nw(nw, msg, quit=True)
 
-                    elif code == '500':
+                    elif nw.status_code == '500':
                         if nzo.precheck:
                             # Assume "STAT" command is not supported
                             server.have_stat = False
@@ -730,8 +736,7 @@ class Downloader(Thread):
                             # Assume "BODY" command is not supported
                             server.have_body = False
                             logging.debug('Server %s does not support BODY', server.id)
-                        nw.lines = []
-                        nw.data = ''
+                        nw.clear_data()
                         self.__request_article(nw)
 
                 if done:
@@ -739,7 +744,7 @@ class Downloader(Thread):
                     server.errormsg = server.warning = ''
                     if sabnzbd.LOG_ALL:
                         logging.debug('Thread %s@%s: %s done', nw.thrdnum, server.id, article.article)
-                    self.decoder.decode(article, nw.lines)
+                    self.decode(article, nw.lines, nw.data)
 
                     nw.soft_reset()
                     server.busy_threads.remove(nw)
@@ -787,7 +792,7 @@ class Downloader(Thread):
         if article:
             if article.tries > cfg.max_art_tries() and (article.fetcher.optional or not cfg.max_art_opt()):
                 # Too many tries on this server, consider article missing
-                self.decoder.decode(article, None)
+                self.decode(article, None, None)
             else:
                 # Remove this server from try_list
                 article.fetcher = None

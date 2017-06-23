@@ -36,7 +36,8 @@ from urlparse import urlparse
 
 import sabnzbd
 from sabnzbd.decorators import synchronized
-from sabnzbd.constants import DEFAULT_PRIORITY, FUTURE_Q_FOLDER, JOB_ADMIN, GIGI, MEBI
+from sabnzbd.constants import DEFAULT_PRIORITY, FUTURE_Q_FOLDER, JOB_ADMIN, \
+     GIGI, MEBI, DEF_CACHE_LIMIT
 import sabnzbd.config as config
 import sabnzbd.cfg as cfg
 from sabnzbd.encoding import unicoder, special_fixer, gUTF
@@ -186,9 +187,11 @@ def cat_convert(cat):
     """
     if cat and cat.lower() != 'none':
         cats = config.get_ordered_categories()
+        raw_cats = config.get_categories()
         for ucat in cats:
             try:
-                indexer = ucat['newzbin']
+                # Ordered cat-list has tags only as string
+                indexer = raw_cats[ucat['name']].newzbin()
                 if not isinstance(indexer, list):
                     indexer = [indexer]
             except:
@@ -236,16 +239,27 @@ def replace_win_devices(name):
                 break
     return name
 
+
+def has_win_device(p):
+    """ Return True if filename part contains forbidden name
+    """
+    p = os.path.split(p)[1].lower()
+    for dev in _DEVICES:
+        if p == dev or p.startswith(dev + '.'):
+            return True
+    return False
+
+
 if sabnzbd.WIN32:
     # the colon should be here too, but we'll handle that separately
-    CH_ILLEGAL = r'\/<>?*|"'
-    CH_LEGAL = r'++{}!@#`'
+    CH_ILLEGAL = '\/<>?*|"\t'
+    CH_LEGAL = '++{}!@#`+'
 else:
-    CH_ILLEGAL = r'/'
-    CH_LEGAL = r'+'
+    CH_ILLEGAL = '/'
+    CH_LEGAL = '+'
 
 
-def sanitize_filename(name):
+def sanitize_filename(name, allow_win_devices=False):
     """ Return filename with illegal chars converted to legal ones
         and with the par2 extension always in lowercase
     """
@@ -261,6 +275,9 @@ def sanitize_filename(name):
         elif sabnzbd.DARWIN:
             # Compensate for the foolish way par2 on OSX handles a colon character
             name = name[name.rfind(':') + 1:]
+
+    if sabnzbd.WIN32 and not allow_win_devices:
+        name = replace_win_devices(name)
 
     lst = []
     for ch in name.strip():
@@ -313,12 +330,7 @@ def sanitize_foldername(name, limit=True):
         else:
             lst.append(ch)
     name = ''.join(lst)
-
     name = name.strip()
-    if name != '.' and name != '..':
-        name = name.rstrip('.')
-    if not name:
-        name = 'unknown'
 
     if sabnzbd.WIN32 or cfg.sanitize_safe():
         name = replace_win_devices(name)
@@ -326,6 +338,12 @@ def sanitize_foldername(name, limit=True):
     maxlen = cfg.folder_max_length()
     if limit and len(name) > maxlen:
         name = name[:maxlen]
+
+    # And finally, make sure it doesn't end in a dot
+    if name != '.' and name != '..':
+        name = name.rstrip('.')
+    if not name:
+        name = 'unknown'
 
     return name
 
@@ -354,6 +372,24 @@ def sanitize_and_trim_path(path):
     for part in parts:
         new_path = os.path.join(new_path, sanitize_foldername(part))
     return os.path.abspath(os.path.normpath(new_path))
+
+
+def sanitize_files_in_folder(folder):
+    """ Sanitize each file in the folder, return list of new names
+    """
+    lst = []
+    for root, _, files in os.walk(folder):
+        for file_ in files:
+            path = os.path.join(root, file_)
+            new_path = os.path.join(root, sanitize_filename(file_))
+            if path != new_path:
+                try:
+                    os.rename(path, new_path)
+                    path = new_path
+                except:
+                    logging.debug('Cannot rename %s to %s', path, new_path)
+            lst.append(path)
+    return lst
 
 
 def flag_file(path, flag, create=False):
@@ -745,7 +781,7 @@ def exit_sab(value):
     sys.stdout.flush()
     if getattr(sys, 'frozen', None) == 'macosx_app':
         sabnzbd.SABSTOP = True
-        from PyObjCTools import AppHelper  # @UnresolvedImport
+        from PyObjCTools import AppHelper
         AppHelper.stopEventLoop()
     sys.exit(value)
 
@@ -785,6 +821,28 @@ def check_mount(path):
             logging.debug('Waiting for %s to come online', m.group(1))
             time.sleep(1)
     return not m
+
+
+def get_cache_limit():
+    """ Depending on OS, calculate cache limit """
+    # OSX/Windows use Default value
+    if sabnzbd.WIN32 or sabnzbd.DARWIN:
+        return DEF_CACHE_LIMIT
+
+    # Calculate, if possible
+    try:
+        # Use 1/4th of available memory
+        mem_bytes = (os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES'))/4
+        # Not more than the maximum we think is reasonable
+        if mem_bytes > from_units(DEF_CACHE_LIMIT):
+            return DEF_CACHE_LIMIT
+        elif mem_bytes > from_units('32M'):
+            # We make sure it's at least a valid value
+            return to_units(mem_bytes)
+    except:
+        pass
+    # If failed, leave empty so user needs to decide
+    return ''
 
 
 ##############################################################################
@@ -854,19 +912,24 @@ def move_to_path(path, new_path):
         new_path = get_unique_filename(new_path)
 
     if new_path:
-        logging.debug("Moving. Old path:%s new path:%s overwrite?:%s",
+        logging.debug("Moving. Old path: %s New path: %s Overwrite: %s",
                                                   path, new_path, overwrite)
         try:
             # First try cheap rename
             renamer(path, new_path)
         except:
             # Cannot rename, try copying
+            logging.debug("File could not be renamed, trying copying: %s", path)
             try:
                 if not os.path.exists(os.path.dirname(new_path)):
                     create_dirs(os.path.dirname(new_path))
                 shutil.copyfile(path, new_path)
                 os.remove(path)
             except:
+                # Check if the old-file actually exists (possible delete-delays)
+                if not os.path.exists(path):
+                    logging.debug("File not moved, original path gone: %s", path)
+                    return True, None
                 if not (cfg.marker_file() and cfg.marker_file() in path):
                     logging.error(T('Failed moving %s to %s'), clip_path(path), clip_path(new_path))
                     logging.info("Traceback: ", exc_info=True)
@@ -1101,59 +1164,63 @@ if sabnzbd.WIN32:
     except:
         pass
 
-    def diskfree(_dir):
-        """ Return amount of free diskspace in GBytes """
+    def diskspace_base(_dir):
+        """ Return amount of free and used diskspace in GBytes """
         _dir = find_dir(_dir)
         try:
             available, disk_size, total_free = win32api.GetDiskFreeSpaceEx(_dir)
-            return available / GIGI
+            return disk_size / GIGI, available / GIGI
         except:
-            return 0.0
+            return 0.0, 0.0
 
-    def disktotal(_dir):
-        """ Return amount of free diskspace in GBytes """
-        _dir = find_dir(_dir)
-        try:
-            available, disk_size, total_free = win32api.GetDiskFreeSpaceEx(_dir)
-            return disk_size / GIGI
-        except:
-            return 0.0
 else:
     try:
         os.statvfs
         # posix diskfree
-
-        def diskfree(_dir):
-            """ Return amount of free diskspace in GBytes """
-            _dir = find_dir(_dir)
-            try:
-                s = os.statvfs(_dir)
-                if s.f_bavail < 0:
-                    return float(sys.maxint) * float(s.f_frsize) / GIGI
-                else:
-                    return float(s.f_bavail) * float(s.f_frsize) / GIGI
-            except OSError:
-                return 0.0
-
-        def disktotal(_dir):
-            """ Return amount of total diskspace in GBytes """
+        def diskspace_base(_dir):
+            """ Return amount of free and used diskspace in GBytes """
             _dir = find_dir(_dir)
             try:
                 s = os.statvfs(_dir)
                 if s.f_blocks < 0:
-                    return float(sys.maxint) * float(s.f_frsize) / GIGI
+                    disk_size = float(sys.maxint) * float(s.f_frsize)
                 else:
-                    return float(s.f_blocks) * float(s.f_frsize) / GIGI
-            except OSError:
-                return 0.0
+                    disk_size = float(s.f_blocks) * float(s.f_frsize)
+                if s.f_bavail < 0:
+                    available = float(sys.maxint) * float(s.f_frsize)
+                else:
+                    available = float(s.f_bavail) * float(s.f_frsize)
+                return disk_size / GIGI, available / GIGI
+            except:
+                return 0.0, 0.0
     except ImportError:
-        def diskfree(_dir):
-            return 10.0
-
-        def disktotal(_dir):
-            return 20.0
+        def diskspace_base(_dir):
+            return 20.0, 10.0
 
 
+__LAST_DISK_RESULT = {}
+__LAST_DISK_CALL = {}
+def diskspace(_dir, force=False):
+    """ Wrapper to cache results """
+    if _dir not in __LAST_DISK_RESULT:
+        __LAST_DISK_RESULT[_dir] = [0.0, 0.0]
+        __LAST_DISK_CALL[_dir] = 0.0
+
+    # When forced, ignore any cache to avoid problems in UI
+    if force:
+        return diskspace_base(_dir)
+
+    # Check against cache
+    if time.time() > __LAST_DISK_CALL[_dir] + 10.0:
+        __LAST_DISK_RESULT[_dir] = diskspace_base(_dir)
+        __LAST_DISK_CALL[_dir] = time.time()
+
+    return __LAST_DISK_RESULT[_dir]
+
+
+##############################################################################
+# Other support functions
+##############################################################################
 def create_https_certificates(ssl_cert, ssl_key):
     """ Create self-signed HTTPS certificates and store in paths 'ssl_cert' and 'ssl_key' """
     if not sabnzbd.HAVE_CRYPTOGRAPHY:
@@ -1164,7 +1231,7 @@ def create_https_certificates(ssl_cert, ssl_key):
     try:
         from sabnzbd.utils.certgen import generate_key, generate_local_cert
         private_key = generate_key(key_size=2048, output_file=ssl_key)
-        cert = generate_local_cert(private_key, days_valid=356*10, output_file=ssl_cert, LN=u'SABnzbd', ON=u'SABnzbd', CN=u'SABnzbd')
+        cert = generate_local_cert(private_key, days_valid=3560, output_file=ssl_cert, LN=u'SABnzbd', ON=u'SABnzbd', CN=u'localhost')
         logging.info('Self-signed certificates generated successfully')
     except:
         logging.error(T('Error creating SSL key and certificate'))
@@ -1283,6 +1350,18 @@ def renamer(old, new):
     if sabnzbd.WIN32:
         retries = 15
         while retries > 0:
+            # First we try 3 times with os.rename
+            if retries > 12:
+                try:
+                    os.rename(old, new)
+                    return
+                except:
+                    retries -= 1
+                    time.sleep(3)
+                    continue
+
+            # Now we try the back-up method
+            logging.debug('Could not rename, trying move for %s to %s', old, new)
             try:
                 shutil.move(old, new)
                 return
@@ -1347,15 +1426,6 @@ def is_writable(path):
         return bool(os.stat(path).st_mode & stat.S_IWUSR)
     else:
         return True
-
-
-def format_source_url(url):
-    """ Format URL suitable for 'Source' stage """
-    if sabnzbd.HAVE_SSL:
-        prot = 'https'
-    else:
-        prot = 'http:'
-    return url
 
 
 def get_base_url(url):
@@ -1435,31 +1505,10 @@ def set_permissions(path, recursive=True):
             set_chmod(path, umask_file, report)
 
 
-def short_path(path, always=True):
-    """ For Windows, return shortened ASCII path, for others same path
-        When `always` is off, only return a short path when size is above 259
-    """
-    if sabnzbd.WIN32:
-        import win32api
-        path = os.path.normpath(path)
-        if always or len(path) > 259:
-            # First make the path "long"
-            path = long_path(path)
-            if os.path.exists(path):
-                # Existing path can always be shortened
-                path = win32api.GetShortPathName(path)
-            else:
-                # For new path, shorten only existing part (recursive)
-                path1, name = os.path.split(path)
-                path = os.path.join(short_path(path1, always), name)
-        path = clip_path(path)
-    return path
-
-
 def clip_path(path):
     r""" Remove \\?\ or \\?\UNC\ prefix from Windows path """
     if sabnzbd.WIN32 and path and '?' in path:
-        path = path.replace(u'\\\\?\\UNC\\', u'\\\\').replace(u'\\\\?\\', u'')
+        path = path.replace(u'\\\\?\\UNC\\', u'\\\\', 1).replace(u'\\\\?\\', u'', 1)
     return path
 
 
@@ -1492,3 +1541,11 @@ def get_urlbase(url):
     """ Return the base URL (like http://server.domain.com/) """
     parsed_uri = urlparse(url)
     return '{uri.scheme}://{uri.netloc}/'.format(uri=parsed_uri)
+
+
+def nntp_to_msg(text):
+    """ Format raw NNTP data for display """
+    if isinstance(text, list):
+        text = text[0]
+    lines = text.split('\r\n')
+    return lines[0]
