@@ -42,7 +42,7 @@ import sabnzbd.notifier as notifier
 
 _BAD_GZ_HOSTS = ('.zip', 'nzbsa.co.za', 'newshost.za.net')
 _RARTING_FIELDS = ('x-rating-id', 'x-rating-url', 'x-rating-host', 'x-rating-video', 'x-rating-videocnt', 'x-rating-audio', 'x-rating-audiocnt',
-                    'x-rating-voteup', 'x-rating-votedown', 'x-rating-spam', 'x-rating-confirmed-spam', 'x-rating-passworded', 'x-rating-confirmed-passworded')
+    'x-rating-voteup', 'x-rating-votedown', 'x-rating-spam', 'x-rating-confirmed-spam', 'x-rating-passworded', 'x-rating-confirmed-passworded')
 
 
 class URLGrabber(Thread):
@@ -117,6 +117,7 @@ class URLGrabber(Thread):
                     logging.debug('Error "%s" trying to get the url %s', error1, url)
                     if 'certificate_verify_failed' in error1 or 'certificateerror' in error0:
                         msg = T('Server %s uses an untrusted HTTPS certificate') % ''
+                        msg += ' - https://sabnzbd.org/certificate-errors'
                         retry = False
                     elif 'nodename nor servname provided' in error1:
                         msg = T('Server name does not resolve')
@@ -212,14 +213,16 @@ class URLGrabber(Thread):
                 if not data:
                     try:
                         data = fn.read()
-                    except IncompleteRead, e:
+                    except (IncompleteRead, IOError):
                         bad_fetch(future_nzo, url, T('Server could not complete request'))
+                        fn.close()
+                        continue
                 fn.close()
 
                 if '<nzb' in data and misc.get_ext(filename) != '.nzb':
                     filename += '.nzb'
 
-                # Sanatize filename first
+                # Sanitize filename first (also removing forbidden Windows-names)
                 filename = misc.sanitize_filename(filename)
 
                 # Write data to temp file

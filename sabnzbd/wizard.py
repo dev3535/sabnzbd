@@ -27,7 +27,6 @@ from Cheetah.Template import Template
 import sabnzbd
 import sabnzbd.api
 from sabnzbd.lang import list_languages, set_language
-from sabnzbd.utils.servertests import test_nntp_server_dict
 from sabnzbd.api import Ttemplate
 import sabnzbd.interface
 import sabnzbd.config as config
@@ -36,11 +35,10 @@ import sabnzbd.cfg as cfg
 
 class Wizard(object):
 
-    def __init__(self, web_dir, root, prim):
+    def __init__(self, root):
         self.__root = root
         # Get the path for the folder named wizard
         self.__web_dir = sabnzbd.WIZARD_DIR
-        self.__prim = prim
         self.info = {'webdir': sabnzbd.WIZARD_DIR,
                      'steps': 2,
                      'version': sabnzbd.__version__,
@@ -96,7 +94,7 @@ class Wizard(object):
         info['language'] = cfg.language()
         info['active_lang'] = info['language']
         info['T'] = Ttemplate
-        info['have_ssl'] = bool(sabnzbd.HAVE_SSL)
+        info['have_ssl_context'] = sabnzbd.HAVE_SSL_CONTEXT
 
         servers = config.get_servers()
         if not servers:
@@ -106,6 +104,7 @@ class Wizard(object):
             info['password'] = ''
             info['connections'] = ''
             info['ssl'] = 0
+            info['ssl_verify'] = 2
         else:
             for server in servers:
                 # If there are multiple servers, just use the first enabled one
@@ -115,8 +114,8 @@ class Wizard(object):
                 info['username'] = s.username()
                 info['password'] = s.password.get_stars()
                 info['connections'] = s.connections()
-
                 info['ssl'] = s.ssl()
+                info['ssl_verify'] = s.ssl_verify()
                 if s.enable():
                     break
         template = Template(file=os.path.join(self.__web_dir, 'one.html'),
@@ -209,21 +208,20 @@ class Wizard(object):
         urls = []
         for sock in socks:
             if sock:
-                if cfg.enable_https():
+                if cfg.enable_https() and cfg.https_port():
                     url = 'https://%s:%s/sabnzbd/' % (sock, cfg.https_port())
+                elif cfg.enable_https():
+                    url = 'https://%s:%s/sabnzbd/' % (sock, cfg.cherryport())
                 else:
                     url = 'http://%s:%s/sabnzbd/' % (sock, cfg.cherryport())
 
                 urls.append(url)
 
-        if cfg.enable_https():
-            access_url = 'https://%s:%s/sabnzbd/' % (access_uri, cfg.https_port())
+        if cfg.enable_https() and cfg.https_port():
+            access_url = 'https://%s:%s/sabnzbd/' % (sock, cfg.https_port())
+        elif cfg.enable_https():
+            access_url = 'https://%s:%s/sabnzbd/' % (access_uri, cfg.cherryport())
         else:
             access_url = 'http://%s:%s/sabnzbd/' % (access_uri, cfg.cherryport())
 
         return access_url, urls
-
-    @cherrypy.expose
-    def servertest(self, **kwargs):
-        _result, msg = test_nntp_server_dict(kwargs)
-        return msg

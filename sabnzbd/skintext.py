@@ -155,6 +155,7 @@ SKIN_TEXT = {
     'menu-forums' : TT('Forum'), #: Main menu item
     'menu-irc' : TT('IRC'), #: Main menu item
     'menu-issues' : TT('Issues'), #: Main menu item
+    'menu-donate' : TT('Support the project, Donate!'), #: Main menu item
     'cmenu-general' : TT('General'), #: Main menu item
     'cmenu-folders' : TT('Folders'), #: Main menu item
     'cmenu-switches' : TT('Switches'), #: Main menu item
@@ -299,7 +300,7 @@ SKIN_TEXT = {
 # Configuration
     'confgFile' : TT('Config File'),
     'cache' : TT('Used cache'), #: Main config page, how much cache is in use
-    'explain-Restart' : TT('This will restart SABnzbd.<br />Use it when you think the program has a stability problem.<br />Downloading will be paused before the restart and resume afterwards.') + TT('<br />If authentication is enabled, you will need to login again.'),
+    'explain-Restart' : TT('This will restart SABnzbd.<br />Use it when you think the program has a stability problem.<br />Downloading will be paused before the restart and resume afterwards.'),
     'explain-needNewLogin' : TT('<br />If authentication is enabled, you will need to login again.'),
     'button-advanced' : TT('Advanced'),
     'button-restart' : TT('Restart'),
@@ -311,7 +312,9 @@ SKIN_TEXT = {
     #'explain-Shutdown' : TT('This will end the SABnzbd process. <br />You will be unable to access SABnzbd and no downloading will take place until the service is started again.'),
     'opt-enable_unzip' : TT('Enable Unzip'),
     'opt-enable_7zip' : TT('Enable 7zip'),
+    'opt-multicore-par2' : TT('Multicore Par2'),
     'explain-nosslcontext' : TT('Secure (SSL) connections from SABnzbd to newsservers and HTTPS websites will be encrypted, however, validating a server\'s identity using its certificates is not possible. Python 2.7.9 or above, OpenSSL 1.0.2 or above and up-to-date local CA certificates are required.'),
+    'explain-getpar2mt': TT('Speed up repairs by installing multicore Par2, it is available for many platforms.'),
     'version' : TT('Version'),
     'uptime' : TT('Uptime'),
     'backup' : TT('Backup'), #: Indicates that server is Backup server in Status page
@@ -327,8 +330,6 @@ SKIN_TEXT = {
     'explain-port' : TT('Port SABnzbd should listen on.'),
     'opt-web_dir' : TT('Web Interface'),
     'explain-web_dir' : TT('Choose a skin.'),
-    'opt-web_dir2' : TT('Secondary Web Interface'),
-    'explain-web_dir2' : TT('Activate an alternative skin.'),
     'opt-web_username' : TT('SABnzbd Username'),
     'explain-web_username' : TT('Optional authentication username.'),
     'opt-web_password' : TT('SABnzbd Password'),
@@ -414,16 +415,12 @@ SKIN_TEXT = {
     'base-folder' : TT('Default Base Folder'),
 
 # Config->Switches
-    'opt-quick_check' : TT('Enable Quick Check'),
-    'explain-quick_check' : TT('Skip par2 checking when files are 100% valid.'),
     'opt-enable_all_par' : TT('Download all par2 files'),
-    'explain-enable_all_par' : TT('This prevents multiple repair runs. QuickCheck on: download all par2 files when needed. QuickCheck off: always download all par2 files.'),
+    'explain-enable_all_par' : TT('This prevents multiple repair runs by downloading all par2 files when needed.'),
     'opt-enable_recursive' : TT('Enable recursive unpacking'),
     'explain-enable_recursive' : TT('Unpack archives (rar, zip, 7z) within archives.'),
     'opt-flat_unpack' : TT('Ignore any folders inside archives'),
     'explain-flat_unpack' : TT('All files will go into a single folder.'),
-    'opt-overwrite_files' : TT('When unpacking, overwrite existing files'),
-    'explain-overwrite_files' : TT('This will overwrite existing files instead of creating an alternative name.'),
     'opt-top_only' : TT('Only Get Articles for Top of Queue'),
     'explain-top_only' : TT('Enable for less memory usage. Disable to prevent slow jobs from blocking the queue.'),
     'opt-safe_postproc' : TT('Post-Process Only Verified Jobs'),
@@ -445,14 +442,10 @@ SKIN_TEXT = {
     'explain-unwanted_extensions' : TT('List all unwanted extensions. For example: <b>exe</b> or <b>exe, com</b>'),
     'opt-sfv_check' : TT('Enable SFV-based checks'),
     'explain-sfv_check' : TT('Do an extra verification based on SFV files.'),
-    'opt-unpack_check' : TT('Check result of unpacking'),
-    'explain-unpack_check' : TT('Check result of unpacking (needs to be off for some file systems).'),
     'opt-script_can_fail' : TT('User script can flag job as failed'),
     'explain-script_can_fail' : TT('When the user script returns a non-zero exit code, the job will be flagged as failed.'),
     'opt-new_nzb_on_failure' : TT('On failure, try alternative NZB'),
     'explain-new_nzb_on_failure' : TT('Some servers provide an alternative NZB when a download fails.'),
-    'opt-enable_meta' : TT('Use tags from indexer'),
-    'explain-enable_meta' : TT('Use tags from indexer for title, season, episode, etc. Otherwise all naming is derived from the NZB name.'),
     'opt-folder_rename' : TT('Enable folder rename'),
     'explain-folder_rename' : TT('Use temporary names during post processing. Disable when your system doesn\'t handle that properly.'),
     'opt-pre_script' : TT('Pre-queue user script'),
@@ -478,8 +471,6 @@ SKIN_TEXT = {
     'explain-replace_spaces' : TT('Replace spaces with underscores in folder names.'),
     'opt-replace_dots' : TT('Replace dots in Foldername'),
     'explain-replace_dots' : TT('Replace dots with spaces in folder names.'),
-    'opt-replace_illegal' : TT('Replace Illegal Characters in Folder Names'),
-    'explain-replace_illegal' : TT('Replace illegal characters in folder names by equivalents (otherwise remove).'),
     'opt-sanitize_safe' : TT('Make Windows compatible'),
     'explain-sanitize_safe' : TT('For servers: make sure names are compatible with Windows.'),
     'opt-auto_browser' : TT('Launch Browser on Startup'),
@@ -513,17 +504,12 @@ SKIN_TEXT = {
     'explain-ssl_ciphers' : TT('Increase performance by forcing a lower SSL encryption strength.'),
     'opt-max_art_tries' : TT('Maximum retries'),
     'explain-max_art_tries' : TT('Maximum number of retries per server'),
-    'opt-max_art_opt' : TT('Only for optional servers'),
-    'explain-max_art_opt' : TT('Apply maximum retries only to optional servers'),
     'opt-fail_hopeless_jobs' : TT('Abort jobs that cannot be completed'),
     'explain-fail_hopeless_jobs' : TT('When during download it becomes clear that too much data is missing, abort the job'),
     'opt-rating_enable' : TT('Enable Indexer Integration'),
-    'explain-rating_enable' : TT('Enhanced functionality including ratings and extra status information is available when connected to OZnzb indexer.'),
+    'explain-rating_enable' : TT('Indexers can supply rating information when a job is added and SABnzbd can report to the indexer if a job couldn\'t be completed. Depending on your indexer, the API key setting can be left blank.'),
     'opt-rating_api_key' : TT('API Key'),
-    'opt-rating_host' : TT('Server address'),
     'explain-rating_api_key' : TT('This key provides identity to indexer. Check your profile on the indexer\'s website.'),
-    'opt-rating_feedback' : TT('Automatic Feedback'),
-    'explain-rating_feedback' : TT('Send automatically calculated validation results for downloads to indexer.'),
     'opt-rating_filter_enable' : TT('Enable Filtering'),
     'explain-rating_filter_enable' : TT('Action downloads according to filtering rules.'),
     'opt-rating_filter_abort_if' : TT('Abort If'),
@@ -555,9 +541,9 @@ SKIN_TEXT = {
     'srv-ssl' : TT('SSL'), #: Server SSL tickbox
     'explain-ssl' : TT('Secure connection to server'), #: Server SSL tickbox
     'opt-ssl_verify' : TT('Certificate verification'),
-    'explain-ssl_verify' : TT('Default: when SSL is enabled, verify the identity of the server using its certificates. Strict: verify and enforce matching hostname.'),
+    'explain-ssl_verify' : TT('Minimal: when SSL is enabled, verify the identity of the server using its certificates. Strict: verify and enforce matching hostname.'),
     'ssl_verify-disabled' : TT('Disabled'),
-    'ssl_verify-normal' : TT('Default'),
+    'ssl_verify-normal' : TT('Minimal'),
     'ssl_verify-strict' : TT('Strict'),
     'srv-priority' : TT('Priority'), #: Server priority
     'explain-svrprio' : TT('0 is highest priority, 100 is the lowest priority'), #: Explain server priority
@@ -694,7 +680,7 @@ SKIN_TEXT = {
     'button-evalFeed' : TT('Apply filters'),
     'presetSort' : TT('Presets'),
     'example' : TT('Example'),
-    'movieSort' : TT('Generic Sorting'),
+    'movieSort' : TT('Movie Sorting'),
     'opt-movieSort' : TT('Enable Movie Sorting'),
     'opt-movieExtra' : TT('Keep loose downloads in extra folders'),
     'affectedCat' : TT('Affected Categories'),

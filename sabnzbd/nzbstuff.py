@@ -25,35 +25,30 @@ import time
 import re
 import logging
 import datetime
+import threading
 import xml.sax
 import xml.sax.handler
 import xml.sax.xmlreader
+import hashlib
+
 try:
     from cStringIO import StringIO
 except ImportError:
     from StringIO import StringIO
-try:
-    import hashlib
-    new_md5 = hashlib.md5
-except:
-    import md5
-    new_md5 = md5.new
 
 # SABnzbd modules
 import sabnzbd
-from sabnzbd.constants import sample_match, GIGI, ATTRIB_FILE, JOB_ADMIN, \
+from sabnzbd.constants import GIGI, ATTRIB_FILE, JOB_ADMIN, \
     DEFAULT_PRIORITY, LOW_PRIORITY, NORMAL_PRIORITY, \
     PAUSED_PRIORITY, TOP_PRIORITY, DUP_PRIORITY, REPAIR_PRIORITY, \
     RENAMES_FILE, Status, PNFO
 from sabnzbd.misc import to_units, cat_to_opts, cat_convert, sanitize_foldername, \
-    get_unique_path, get_admin_path, remove_all, format_source_url, \
-    sanitize_filename, globber_full, sanitize_foldername, int_conv, \
-    set_permissions, format_time_string, long_path, trim_win_path, \
+    get_unique_path, get_admin_path, remove_all, sanitize_filename, globber_full, \
+    int_conv, set_permissions, format_time_string, long_path, trim_win_path, \
     fix_unix_encoding, calc_age
-from sabnzbd.decorators import synchronized, IO_LOCK
+from sabnzbd.decorators import synchronized
 import sabnzbd.config as config
 import sabnzbd.cfg as cfg
-from sabnzbd.trylist import TryList
 from sabnzbd.encoding import unicoder, platform_encode
 from sabnzbd.database import HistoryDB
 from sabnzbd.rating import Rating
@@ -62,10 +57,39 @@ __all__ = ['Article', 'NzbFile', 'NzbObject']
 
 # Name patterns
 SUBJECT_FN_MATCHER = re.compile(r'"([^"]*)"')
-RE_SAMPLE = re.compile(sample_match, re.I)
 PROBABLY_PAR2_RE = re.compile(r'(.*)\.vol(\d*)[\+\-](\d*)\.par2', re.I)
 REJECT_PAR2_RE = re.compile(r'\.par2\.\d+', re.I)  # Reject duplicate par2 files
 RE_NORMAL_NAME = re.compile(r'\.\w{2,5}$')  # Test reasonably sized extension at the end
+
+
+##############################################################################
+# Trylist
+##############################################################################
+
+class TryList(object):
+    """ TryList keeps track of which servers have been tried for a specific article
+        This used to have a Lock, but it's not needed (all atomic) and faster without
+    """
+    # Pre-define attributes to save memory
+    __slots__ = ('__try_list', 'fetcher_priority')
+
+    def __init__(self):
+        self.__try_list = []
+        self.fetcher_priority = 0
+
+    def server_in_try_list(self, server):
+        """ Return whether specified server has been tried """
+        return server in self.__try_list
+
+    def add_to_try_list(self, server):
+        """ Register server as having been tried already """
+        self.__try_list.append(server)
+
+    def reset_try_list(self):
+        """ Clean the list """
+        self.__try_list = []
+        self.fetcher_priority = 0
+
 
 ##############################################################################
 # Article
@@ -77,13 +101,12 @@ ArticleSaver = (
 
 class Article(TryList):
     """ Representation of one article """
+    # Pre-define attributes to save memory
+    __slots__ = ArticleSaver + ('fetcher', 'fetcher_priority', 'tries')
 
     def __init__(self, article, bytes, partnum, nzf):
         TryList.__init__(self)
-
         self.fetcher = None
-        self.allow_fill_server = False
-
         self.article = article
         self.art_id = None
         self.bytes = bytes
@@ -161,21 +184,20 @@ class Article(TryList):
         """ Save to pickle file, selecting attributes """
         dict_ = {}
         for item in ArticleSaver:
-            dict_[item] = self.__dict__[item]
+            dict_[item] = getattr(self, item)
         return dict_
 
     def __setstate__(self, dict_):
         """ Load from pickle file, selecting attributes """
         for item in ArticleSaver:
             try:
-                self.__dict__[item] = dict_[item]
+                setattr(self, item, dict_[item])
             except KeyError:
                 # Handle new attributes
-                self.__dict__[item] = None
+                setattr(self, item, None)
         TryList.__init__(self)
         self.fetcher = None
         self.fetcher_priority = 0
-        self.allow_fill_server = False
         self.tries = 0
 
     def __repr__(self):
@@ -188,14 +210,16 @@ class Article(TryList):
 ##############################################################################
 NzbFileSaver = (
     'date', 'subject', 'filename', 'type', 'is_par2', 'vol', 'blocks', 'setname',
-    'extrapars', 'initial_article', 'articles', 'decodetable', 'bytes', 'bytes_left',
+    'extrapars', 'articles', 'decodetable', 'bytes', 'bytes_left',
     'article_count', 'nzo', 'nzf_id', 'deleted', 'valid', 'import_finished',
-    'md5sum', 'valid', 'completed'
+    'md5sum'
 )
 
 
 class NzbFile(TryList):
     """ Representation of one file consisting of multiple articles """
+     # Pre-define attributes to save memory
+    __slots__ = NzbFileSaver
 
     def __init__(self, date, subject, article_db, bytes, nzo):
         """ Setup object """
@@ -203,9 +227,7 @@ class NzbFile(TryList):
 
         self.date = date
         self.subject = subject
-        self.filename = None
         self.type = None
-
         self.filename = name_extractor(subject)
 
         self.is_par2 = False
@@ -213,8 +235,6 @@ class NzbFile(TryList):
         self.blocks = None
         self.setname = None
         self.extrapars = None
-
-        self.initial_article = None
 
         self.articles = []
         self.decodetable = {}
@@ -226,8 +246,6 @@ class NzbFile(TryList):
         self.nzo = nzo
         self.nzf_id = sabnzbd.get_new_id("nzf", nzo.workpath)
         self.deleted = False
-        self.completed = False
-
         self.valid = False
         self.import_finished = False
 
@@ -241,7 +259,6 @@ class NzbFile(TryList):
     def finish_import(self):
         """ Load the article objects from disk """
         logging.debug("Finishing import on %s", self.subject)
-
         article_db = sabnzbd.load_data(self.nzf_id, self.nzo.workpath, remove=False)
         if article_db:
             for partnum in article_db:
@@ -253,8 +270,6 @@ class NzbFile(TryList):
                 self.articles.append(article)
                 self.decodetable[partnum] = article
 
-            # Look for article with lowest number
-            self.initial_article = self.decodetable[self.lowest_partnum]
             self.import_finished = True
 
     def remove_article(self, article, found):
@@ -265,18 +280,7 @@ class NzbFile(TryList):
                 self.bytes_left -= article.bytes
             self.nzo.bytes_tried += article.bytes
 
-        reset = False
-        if article.partnum == self.lowest_partnum and self.articles:
-            # Issue reset
-            self.initial_article = None
-            self.reset_try_list()
-            reset = True
-
-        done = True
-        if self.articles:
-            done = False
-
-        return (done, reset)
+        return (not self.articles)
 
     def set_par2(self, setname, vol, blocks):
         """ Designate this this file as a par2 file """
@@ -287,16 +291,10 @@ class NzbFile(TryList):
 
     def get_article(self, server, servers):
         """ Get next article to be downloaded """
-        if self.initial_article:
-            article = self.initial_article.get_article(server, servers)
+        for article in self.articles:
+            article = article.get_article(server, servers)
             if article:
                 return article
-
-        else:
-            for article in self.articles:
-                article = article.get_article(server, servers)
-                if article:
-                    return article
 
         self.add_to_try_list(server)
 
@@ -311,11 +309,6 @@ class NzbFile(TryList):
         """ Is this file completed? """
         return self.import_finished and not bool(self.articles)
 
-    @property
-    def lowest_partnum(self):
-        """ Get lowest article number of this file """
-        return min(self.decodetable)
-
     def remove_admin(self):
         """ Remove article database from disk (sabnzbd_nzf_<id>)"""
         try:
@@ -327,17 +320,17 @@ class NzbFile(TryList):
         """ Save to pickle file, selecting attributes """
         dict_ = {}
         for item in NzbFileSaver:
-            dict_[item] = self.__dict__[item]
+            dict_[item] = getattr(self, item)
         return dict_
 
     def __setstate__(self, dict_):
         """ Load from pickle file, selecting attributes """
         for item in NzbFileSaver:
             try:
-                self.__dict__[item] = dict_[item]
+                setattr(self, item, dict_[item])
             except KeyError:
                 # Handle new attributes
-                self.__dict__[item] = None
+                setattr(self, item, None)
         TryList.__init__(self)
 
     def __repr__(self):
@@ -350,9 +343,8 @@ class NzbFile(TryList):
 class NzbParser(xml.sax.handler.ContentHandler):
     """ Forgiving parser for NZB's """
 
-    def __init__(self, nzo, remove_samples=False):
+    def __init__(self, nzo):
         self.nzo = nzo
-        if 0: assert isinstance(self.nzo, NzbObject) # Assert only for debug purposes
         self.in_nzb = False
         self.in_file = False
         self.in_groups = False
@@ -370,8 +362,7 @@ class NzbParser(xml.sax.handler.ContentHandler):
         self.skipped_files = 0
         self.nzf_list = []
         self.groups = []
-        self.md5 = new_md5()
-        self.filter = remove_samples
+        self.md5 = hashlib.md5()
         self.now = time.time()
 
     def startDocument(self):
@@ -393,19 +384,15 @@ class NzbParser(xml.sax.handler.ContentHandler):
         elif name == 'file' and self.in_nzb:
             subject = attrs.get('subject', '').strip()
             self.filename = subject
-
-            if self.filter and RE_SAMPLE.search(subject):
-                logging.info('Skipping sample file %s', subject)
-            else:
-                self.in_file = True
-                self.fileSubject = subject
-                try:
-                    self.file_date = int(attrs.get('date'))
-                except:
-                    # NZB has non-standard timestamp, assume now
-                    self.file_date = self.now
-                self.article_db = {}
-                self.file_bytes = 0
+            self.in_file = True
+            self.fileSubject = subject
+            try:
+                self.file_date = int(attrs.get('date'))
+            except:
+                # NZB has non-standard timestamp, assume now
+                self.file_date = self.now
+            self.article_db = {}
+            self.file_bytes = 0
 
         elif name == 'group' and self.in_nzb and self.in_file and self.in_groups:
             self.in_group = True
@@ -542,14 +529,17 @@ class NzbParser(xml.sax.handler.ContentHandler):
 ##############################################################################
 NzbObjectSaver = (
     'filename', 'work_name', 'final_name', 'created', 'bytes', 'bytes_downloaded', 'bytes_tried',
-    'repair', 'unpack', 'delete', 'script', 'cat', 'url', 'groups', 'avg_date', 'dirprefix',
+    'repair', 'unpack', 'delete', 'script', 'cat', 'url', 'groups', 'avg_date',
     'partable', 'extrapars', 'md5packs', 'files', 'files_table', 'finished_files', 'status',
     'avg_bps_freq', 'avg_bps_total', 'priority', 'dupe_table', 'saved_articles', 'nzo_id',
     'futuretype', 'deleted', 'parsed', 'action_line', 'unpack_info', 'fail_msg', 'nzo_info',
     'custom_name', 'password', 'next_save', 'save_timeout', 'encrypted',
-    'duplicate', 'oversized', 'create_group_folder', 'precheck', 'incomplete', 'reuse', 'meta',
+    'duplicate', 'oversized', 'precheck', 'incomplete', 'reuse', 'meta',
     'md5sum', 'servercount', 'unwanted_ext', 'rating_filtered'
 )
+
+# Lock to prevent errors when saving the NZO data
+NZO_LOCK = threading.RLock()
 
 
 class NzbObject(TryList):
@@ -609,7 +599,6 @@ class NzbObject(TryList):
         self.groups = []
         self.avg_date = datetime.datetime.fromtimestamp(0.0)
         self.avg_stamp = 0.0        # Avg age in seconds (calculated from avg_age)
-        self.dirprefix = []
 
         self.partable = {}          # Holds one parfile-name for each set
         self.extrapars = {}         # Holds the extra parfile names for all sets
@@ -676,8 +665,6 @@ class NzbObject(TryList):
         self.pp_active = False  # Signals active post-processing (not saved)
         self.md5sum = None
 
-        self.create_group_folder = cfg.create_group_folders()
-
         # Remove trailing .nzb and .par(2)
         self.work_name = create_work_name(self.work_name)
 
@@ -686,12 +673,12 @@ class NzbObject(TryList):
             return
 
         # Apply conversion option to final folder
-        if cfg.replace_dots() and ' ' not in self.final_name:
-            logging.info('Replacing dots with spaces in %s', self.final_name)
-            self.final_name = self.final_name.replace('.', ' ')
         if cfg.replace_spaces():
             logging.info('Replacing spaces with underscores in %s', self.final_name)
             self.final_name = self.final_name.replace(' ', '_')
+        if cfg.replace_dots():
+            logging.info('Replacing dots with spaces in %s', self.final_name)
+            self.final_name = self.final_name.replace('.', ' ')
 
         # Determine "incomplete" folder
         wdir = long_path(os.path.join(cfg.download_dir.get_path(), self.work_name))
@@ -704,8 +691,8 @@ class NzbObject(TryList):
             duplicate = series = 0
 
         if reuse:
-            remove_all(adir, 'SABnzbd_nz?_*')
-            remove_all(adir, 'SABnzbd_article_*')
+            remove_all(adir, 'SABnzbd_nz?_*', True)
+            remove_all(adir, 'SABnzbd_article_*', True)
         else:
             wdir = trim_win_path(wdir)
             wdir = get_unique_path(wdir, create_dir=True)
@@ -722,10 +709,7 @@ class NzbObject(TryList):
         # by setting "feature_external_ges" to 0.
 
         if nzb and '<nzb' in nzb:
-            if 'A&A)' in nzb:
-                # Fix needed to compensate for some dumb NZB posters
-                nzb = nzb.replace('A&A)', 'A&amp;A)')
-            handler = NzbParser(self, False)
+            handler = NzbParser(self)
             parser = xml.sax.make_parser()
             parser.setFeature(xml.sax.handler.feature_external_ges, 0)
             parser.setContentHandler(handler)
@@ -780,9 +764,6 @@ class NzbObject(TryList):
                 if cat:
                     break
 
-        if cfg.create_group_folders():
-            self.dirprefix.append(self.group)
-
         # Pickup backed-up attributes when re-using
         if reuse:
             cat, pp, script, priority, name, password, self.url = get_attrib_file(self.workpath, 7)
@@ -800,8 +781,8 @@ class NzbObject(TryList):
         # Run user pre-queue script if needed
         if not reuse:
             accept, name, pp, cat, script, priority, group = \
-                sabnzbd.proxy_pre_queue(self.final_name_pw_clean, pp, cat, script,
-                                        priority, self.bytes, self.groups)
+                sabnzbd.newsunpack.pre_queue(self.final_name_pw_clean, pp, cat, script,
+                                             priority, self.bytes, self.groups)
             accept = int_conv(accept)
             try:
                 pp = int(pp)
@@ -912,12 +893,10 @@ class NzbObject(TryList):
         if accept == 2:
             self.deleted = True
             self.status = Status.FAILED
-            nzo_id = sabnzbd.NzbQueue.do.add(self, quiet=True)
-            sabnzbd.NzbQueue.do.remove(nzo_id)
-            self.purge_data(keep_basic=True)
+            sabnzbd.NzbQueue.do.add(self, quiet=True)
+            sabnzbd.NzbQueue.do.end_job(self)
             # Raise error, so it's not added
             raise TypeError
-
 
     def check_for_dupe(self, nzf):
         filename = nzf.filename
@@ -934,7 +913,7 @@ class NzbObject(TryList):
 
         return dupe
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def update_download_stats(self, bps, serverid, bytes):
         if bps:
             self.avg_bps_total += bps / 1024
@@ -945,8 +924,7 @@ class NzbObject(TryList):
             self.servercount[serverid] = bytes
         self.bytes_downloaded += bytes
 
-
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def remove_nzf(self, nzf):
         if nzf in self.files:
             self.files.remove(nzf)
@@ -956,16 +934,14 @@ class NzbObject(TryList):
         nzf.deleted = True
         return not bool(self.files)
 
-    @synchronized(IO_LOCK)
     def reset_all_try_lists(self):
         for nzf in self.files:
             nzf.reset_all_try_lists()
         self.reset_try_list()
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def postpone_pars(self, nzf, parset):
         """ Move all vol-par files matching 'parset' to the extrapars table """
-        postpone = cfg.quick_check() or not cfg.enable_all_par()
         self.partable[parset] = nzf
         self.extrapars[parset] = []
         nzf.extrapars = self.extrapars[parset]
@@ -978,10 +954,10 @@ class NzbObject(TryList):
                 if head and matcher(lparset, head.lower()):
                     xnzf.set_par2(parset, vol, block)
                     self.extrapars[parset].append(xnzf)
-                    if postpone and not self.precheck:
+                    if not self.precheck:
                         self.files.remove(xnzf)
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def handle_par2(self, nzf, file_done):
         """ Check if file is a par2 and build up par2 collection """
         fn = nzf.filename
@@ -1032,10 +1008,10 @@ class NzbObject(TryList):
         else:
             nzf.filename = nzf.subject
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def remove_article(self, article, found):
         nzf = article.nzf
-        file_done, reset = nzf.remove_article(article, found)
+        file_done = nzf.remove_article(article, found)
 
         if file_done:
             self.remove_nzf(nzf)
@@ -1043,18 +1019,20 @@ class NzbObject(TryList):
                 # set the nzo status to return "Queued"
                 self.status = Status.QUEUED
                 self.set_download_report()
-                self.fail_msg = T('Aborted, cannot be completed') +  ' - https://sabnzbd.org/not-complete'
+                self.fail_msg = T('Aborted, cannot be completed') + ' - https://sabnzbd.org/not-complete'
                 self.set_unpack_info('Download', self.fail_msg, unique=False)
                 logging.debug('Abort job "%s", due to impossibility to complete it', self.final_name_pw_clean)
                 # Update the last check time
                 sabnzbd.LAST_HISTORY_UPDATE = time.time()
-                return True, True, True
-
-        if reset:
-            self.reset_try_list()
+                return True, True
 
         if file_done:
             self.handle_par2(nzf, file_done)
+
+        if not found:
+            # Add extra parfiles when there was a damaged article and not pre-checking
+            if self.extrapars and not self.precheck:
+                self.prospective_add(nzf)
 
         post_done = False
         if not self.files:
@@ -1063,9 +1041,9 @@ class NzbObject(TryList):
             self.status = Status.QUEUED
             self.set_download_report()
 
-        return (file_done, post_done, reset)
+        return (file_done, post_done)
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def remove_saved_article(self, article):
         self.saved_articles.remove(article)
 
@@ -1098,7 +1076,6 @@ class NzbObject(TryList):
                 subject = sanitize_filename(name_extractor(nzf.subject))
                 if (nzf.filename == filename) or (subject == filename) or (filename in subject):
                     nzf.filename = filename
-                    nzf.completed = True
                     nzf.bytes_left = 0
                     self.handle_par2(nzf, file_done=True)
                     self.remove_nzf(nzf)
@@ -1117,7 +1094,6 @@ class NzbObject(TryList):
                 self.files_table[nzf.nzf_id] = nzf
                 self.bytes += nzf.bytes
                 nzf.filename = filename
-                nzf.completed = True
                 nzf.bytes_left = 0
                 self.handle_par2(nzf, file_done=True)
                 self.remove_nzf(nzf)
@@ -1151,14 +1127,14 @@ class NzbObject(TryList):
         if self.unwanted_ext and self.status == 'Paused':
             prefix += T('UNWANTED') + ' / '  # : Queue indicator for unwanted extensions
         if self.rating_filtered and self.status == 'Paused':
-            prefix += Ta('FILTERED') + ' / '  # : Queue indicator for filtered
+            prefix += T('FILTERED') + ' / '  # : Queue indicator for filtered
         if isinstance(self.wait, float):
             dif = int(self.wait - time.time() + 0.5)
             if dif > 0:
                 prefix += T('WAIT %s sec') % dif + ' / '  # : Queue indicator for waiting URL fetch
         if (self.avg_stamp + float(cfg.propagation_delay() * 60)) > time.time() and self.priority != TOP_PRIORITY:
-            wait_time = int((self.avg_stamp + float(cfg.propagation_delay() * 60) - time.time())/60 + 0.5)
-            prefix += T('PROPAGATING %s min') % wait_time + ' / '  # : Queue indicator while waiting for propagtion of post
+            wait_time = int((self.avg_stamp + float(cfg.propagation_delay() * 60) - time.time()) / 60 + 0.5)
+            prefix += T('PROPAGATING %s min') % wait_time + ' / '  # : Queue indicator while waiting for propagation of post
         return '%s%s' % (prefix, self.final_name)
 
     @property
@@ -1185,7 +1161,7 @@ class NzbObject(TryList):
         self.status = Status.PAUSED
         # Prevent loss of paused state when terminated
         if self.nzo_id and not self.is_gone():
-            sabnzbd.save_data(self, self.nzo_id, self.workpath)
+            self.save_to_disk()
 
     def resume(self):
         self.status = Status.QUEUED
@@ -1203,7 +1179,7 @@ class NzbObject(TryList):
             # If user resumes after "unwanted" warning, no more auto-pauses
             self.unwanted_ext = 2
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def add_parfile(self, parfile):
         if not parfile.completed and parfile not in self.files:
             self.files.append(parfile)
@@ -1211,11 +1187,11 @@ class NzbObject(TryList):
             parfile.extrapars.remove(parfile)
         self.remove_extrapar(parfile)
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def remove_parset(self, setname):
         self.partable.pop(setname)
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def remove_extrapar(self, parfile):
         """ Remove par file from any/all sets """
         for _set in self.extrapars:
@@ -1226,8 +1202,7 @@ class NzbObject(TryList):
 
     __re_quick_par2_check = re.compile(r'\.par2\W*', re.I)
 
-
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def prospective_add(self, nzf):
         """ Add par2 files to compensate for missing articles
         """
@@ -1251,7 +1226,7 @@ class NzbObject(TryList):
             for parset in self.extrapars.keys():
                 if parset in nzf.filename and self.extrapars[parset]:
                     extrapars_sorted = sorted(self.extrapars[parset], key=lambda x: x.blocks, reverse=True)
-                    # Loop untill we have enough
+                    # Loop until we have enough
                     while blocks_already < total_need and extrapars_sorted:
                         # Add the first one
                         new_nzf = extrapars_sorted.pop()
@@ -1261,8 +1236,6 @@ class NzbObject(TryList):
                         logging.info('Prospectively added %s repair blocks to %s', new_nzf.blocks, self.final_name)
                     # Reset all try lists
                     self.reset_all_try_lists()
-                    sabnzbd.NzbQueue.do.reset_try_list()
-
 
     def check_quality(self, req_ratio=0):
         """ Determine amount of articles present on servers
@@ -1274,7 +1247,6 @@ class NzbObject(TryList):
         anypars = False
         for nzf_id in self.files_table:
             nzf = self.files_table[nzf_id]
-            if 0: assert isinstance(nzf, NzbFile) # Assert only for debug purposes
             if nzf.deleted:
                 short += nzf.bytes_left
             if self.__re_quick_par2_check.search(nzf.subject):
@@ -1291,9 +1263,8 @@ class NzbObject(TryList):
         logging.debug('Download Quality: enough=%s, have=%s, need=%s, ratio=%s', enough, have, need, ratio)
         return enough, ratio
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def set_download_report(self):
-        import sabnzbd.api
         if self.avg_bps_total and self.bytes_downloaded and self.avg_bps_freq:
             # get the deltatime since the download started
             avg_bps = self.avg_bps_total / self.avg_bps_freq
@@ -1326,13 +1297,13 @@ class NzbObject(TryList):
             msg = u''.join((msg1, msg2, msg3, msg4, msg5, ))
             self.set_unpack_info('Download', msg, unique=True)
             if self.url:
-                self.set_unpack_info('Source', format_source_url(self.url), unique=True)
+                self.set_unpack_info('Source', self.url, unique=True)
             servers = config.get_servers()
             if len(self.servercount) > 0:
                 msgs = ['%s=%sB' % (servers[server].displayname(), to_units(self.servercount[server])) for server in self.servercount if server in servers]
                 self.set_unpack_info('Servers', ', '.join(msgs), unique=True)
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def inc_log(self, log, txt):
         """ Append string txt to nzo_info element "log" """
         try:
@@ -1355,7 +1326,6 @@ class NzbObject(TryList):
         nzf_remove_list = []
 
         for nzf in self.files:
-            if 0: assert isinstance(nzf, NzbFile) # Assert only for debug purposes
             if nzf.deleted:
                 logging.debug('Skipping existing file %s', nzf.filename or nzf.subject)
             else:
@@ -1381,7 +1351,6 @@ class NzbObject(TryList):
         # Remove all files for which admin could not be read
         for nzf in nzf_remove_list:
             nzf.deleted = True
-            nzf.completed = True
             self.files.remove(nzf)
         # If cleanup emptied the active files list, end this job
         if nzf_remove_list and not self.files:
@@ -1392,7 +1361,7 @@ class NzbObject(TryList):
             self.add_to_try_list(server)
         return article
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def move_top_bulk(self, nzf_ids):
         self.cleanup_nzf_ids(nzf_ids)
         if nzf_ids:
@@ -1409,7 +1378,7 @@ class NzbObject(TryList):
                 if target == keys:
                     break
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def move_bottom_bulk(self, nzf_ids):
         self.cleanup_nzf_ids(nzf_ids)
         if nzf_ids:
@@ -1426,7 +1395,7 @@ class NzbObject(TryList):
                 if target == keys:
                     break
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def move_up_bulk(self, nzf_ids, cleanup=True):
         if cleanup:
             self.cleanup_nzf_ids(nzf_ids)
@@ -1443,7 +1412,7 @@ class NzbObject(TryList):
                         self.files[pos - 1] = nzf
                         self.files[pos] = tmp_nzf
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def move_down_bulk(self, nzf_ids, cleanup=True):
         if cleanup:
             self.cleanup_nzf_ids(nzf_ids)
@@ -1462,7 +1431,7 @@ class NzbObject(TryList):
 
     # Determine if rating information (including site identifier so rating can be updated)
     # is present in metadata and if so store it
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def update_rating(self):
         if cfg.rating_enable():
             try:
@@ -1501,7 +1470,7 @@ class NzbObject(TryList):
         else:
             return None
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def purge_data(self, keep_basic=False, del_files=False):
         """ Remove all admin info, 'keep_basic' preserves attribs and nzb """
         wpath = self.workpath
@@ -1562,30 +1531,19 @@ class NzbObject(TryList):
         if nzf_id in self.files_table:
             return self.files_table[nzf_id]
 
-    @synchronized(IO_LOCK)
-    def set_unpack_info(self, key, msg, set='', unique=False):
+    @synchronized(NZO_LOCK)
+    def set_unpack_info(self, key, msg, unique=False):
         """ Builds a dictionary containing the stage name (key) and a message
-            If set is present, it will overwrite any other messages from the set of the same stage
             If unique is present, it will only have a single line message
         """
-        found = False
         # Unique messages allow only one line per stage(key)
         if not unique:
             if key not in self.unpack_info:
                 self.unpack_info[key] = []
-            # If set is present, look for previous message from that set and replace
-            if set:
-                set = unicoder('[%s]' % set)
-                for x in xrange(len(self.unpack_info[key])):
-                    if set in self.unpack_info[key][x]:
-                        self.unpack_info[key][x] = msg
-                        found = True
-            if not found:
-                self.unpack_info[key].append(msg)
+            self.unpack_info[key].append(msg)
         else:
             self.unpack_info[key] = [msg]
 
-    @synchronized(IO_LOCK)
     def set_action_line(self, action=None, msg=None):
         # Update the last check time
         sabnzbd.LAST_HISTORY_UPDATE = time.time()
@@ -1598,6 +1556,7 @@ class NzbObject(TryList):
     def repair_opts(self):
         return self.repair, self.unpack, self.delete
 
+    @synchronized(NZO_LOCK)
     def save_to_disk(self):
         """ Save job's admin to disk """
         self.save_attribs()
@@ -1607,7 +1566,7 @@ class NzbObject(TryList):
     def save_attribs(self):
         set_attrib_file(self.workpath, (self.cat, self.pp, self.script, self.priority, self.final_name, self.password, self.url))
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def build_pos_nzf_table(self, nzf_ids):
         pos_nzf_table = {}
         for nzf_id in nzf_ids:
@@ -1618,7 +1577,7 @@ class NzbObject(TryList):
 
         return pos_nzf_table
 
-    @synchronized(IO_LOCK)
+    @synchronized(NZO_LOCK)
     def cleanup_nzf_ids(self, nzf_ids):
         for nzf_id in nzf_ids[:]:
             if nzf_id in self.files_table:
@@ -1713,25 +1672,6 @@ def nzf_get_filename(nzf):
     return name.lower()
 
 
-def get_ext_list():
-    """ Return priority extension list, with extensions starting with a period """
-    exts = []
-    for ext in cfg.prio_sort_list():
-        ext = ext.strip()
-        if not ext.startswith('.'):
-            ext = '.' + ext
-        exts.append(ext)
-    return exts
-
-
-def ext_on_list(name, lst):
-    """ Return True if `name` contains any extension in `lst` """
-    for ext in lst:
-        if name.rfind(ext) >= 0:
-            return True
-    return False
-
-
 def nzf_cmp_date(nzf1, nzf2):
     """ Compare files based on date, but give vol-par files preference.
         Wrapper needed, because `cmp` function doesn't handle extra parms.
@@ -1760,16 +1700,6 @@ def nzf_cmp_name(nzf1, nzf2, name=True):
         return 1
     if is_par2 and not is_par1:
         return -1
-
-    # Anything with a priority extension goes first
-    ext_list = get_ext_list()
-    if ext_list:
-        onlist1 = ext_on_list(name1, ext_list)
-        onlist2 = ext_on_list(name2, ext_list)
-        if onlist1 and not onlist2:
-            return -1
-        if onlist2 and not onlist1:
-            return 1
 
     if name:
         # Prioritize .rar files above any other type of file (other than vol-par)
@@ -1819,6 +1749,10 @@ def scan_password(name):
 
     # Look for name/password, but make sure that '/' comes before any {{
     if slash >= 0 and slash < braces and 'password=' not in name:
+        # Is it maybe in 'name / password' notation?
+        if slash == name.find(' / ') + 1:
+            # Remove the extra space after name and before password
+            return name[:slash - 1].strip('. '), name[slash + 2:]
         return name[:slash].strip('. '), name[slash + 1:]
 
     # Look for "name password=password"

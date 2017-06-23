@@ -1,5 +1,5 @@
 <!--#set global $pane="RSS"#-->
-<!--#set global $help_uri="configuration/1.2/rss"#-->
+<!--#set global $help_uri="configuration/2.1/rss"#-->
 <!--#include $webdir + "/_inc_header_uc.tmpl"#-->
 <div class="colmask">
     <!--#if not $active_feed#-->
@@ -163,7 +163,7 @@
                             <!--#if $rss[$feed]['pick_cat']#-->
                             <td>
                                 <select name="cat">
-                                    <!--#for $ct in $cat_list#-->
+                                    <!--#for $ct in $categories#-->
                                         <option value="$ct" <!--#if $ct==$rss[$feed]['cat'] then 'selected="selected"' else ""#-->>$Tspec($ct)</option>
                                     <!--#end for#-->
                                 </select>
@@ -191,7 +191,7 @@
                             <!--#if $rss[$feed]['pick_script']#-->
                             <td>
                                 <select name="script">
-                                    <!--#for $sc in $script_list#-->
+                                    <!--#for $sc in $scripts#-->
                                         <option value="$sc" <!--#if $sc==$rss[$feed]['script'] then 'selected="selected"' else ""#-->>$Tspec($sc)</option>
                                     <!--#end for#-->
                                 </select>
@@ -236,7 +236,7 @@
                             <!--#if $rss[$feed]['pick_cat']#-->
                             <td>
                                 <select name="cat">
-                                    <!--#for $ct in $cat_list#-->
+                                    <!--#for $ct in $categories#-->
                                         <option value="$ct" <!--#if $ct=='Default' then 'selected="selected"' else ""#-->>$Tspec($ct)</option>
                                     <!--#end for#-->
                                 </select>
@@ -264,7 +264,7 @@
                             <!--#if $rss[$feed]['pick_script']#-->
                             <td>
                                 <select name="script">
-                                    <!--#for $sc in $script_list#-->
+                                    <!--#for $sc in $scripts#-->
                                         <option value="$sc" <!--#if $sc=='Default' then 'selected="selected"' else ""#-->>$Tspec($sc)</option>
                                     <!--#end for#-->
                                 </select>
@@ -312,7 +312,7 @@
                                 <!--#if $rss[$feed]['pick_cat']#-->
                                 <td>
                                     <select name="cat">
-                                        <!--#for $ct in $cat_list#-->
+                                        <!--#for $ct in $categories#-->
                                             <option value="$ct" <!--#if $ct==$filter[0] then 'selected="selected"' else ""#-->>$Tspec($ct)</option>
                                         <!--#end for#-->
                                     </select>
@@ -340,7 +340,7 @@
                                 <!--#if $rss[$feed]['pick_script']#-->
                                 <td>
                                     <select name="script">
-                                        <!--#for $sc in $script_list#-->
+                                        <!--#for $sc in $scripts#-->
                                             <option value="$sc" <!--#if $sc==$filter[2] then 'selected="selected"' else ""#-->>$Tspec($sc)</option>
                                         <!--#end for#-->
                                     </select>
@@ -401,16 +401,16 @@
                             <form action="download" method="get">
                                 <input type="hidden" value="$feed" name="feed" />
                                 <input type="hidden" name="session" value="$session" />
-                                <input type="hidden" name="url" value="$job[0]" />
-                                <input type="hidden" name="nzbname" value="$job[4]" />
+                                <input type="hidden" name="url" value="$job['url']" />
+                                <input type="hidden" name="nzbname" value="$job['nzbname']" />
                                 <button type="submit" class="btn btn-default"><span class="glyphicon glyphicon-plus-sign"></span> $T('link-download')</button>
                             </form>
                         </td>
-                        <td>$job[3] $job[2]</td>
-                        <td data-sort-value="$job[6]">$job[5]</td>
-                        <td>$job[1]</td>
-                        <td>$job[11]</td>
-                        <td data-sort-value="$job[8]">$job[7]</td>
+                        <td>$job['rule'] $job['skip']</td>
+                        <td data-sort-value="$job['size']">$job['size_units']</td>
+                        <td>$job['title']</td>
+                        <td>$job['cat']</td>
+                        <td data-sort-value="$job['age_ms']">$job['age']</td>
                     </tr>
                 <!--#end for#-->
             </table>
@@ -437,16 +437,16 @@
                             <form action="download" method="get">
                                 <input type="hidden" value="$feed" name="feed" />
                                 <input type="hidden" name="session" value="$session" />
-                                <input type="hidden" name="url" value="$job[0]" />
-                                <input type="hidden" name="nzbname" value="$job[4]" />
+                                <input type="hidden" name="url" value="$job['url']" />
+                                <input type="hidden" name="nzbname" value="$job['nzbname']" />
                                 <button type="submit" class="btn btn-default"><span class="glyphicon glyphicon-plus-sign"></span> $T('link-download')</button>
                             </form>
                         </td>
-                        <td>$job[3] $job[2]</td>
-                        <td data-sort-value="$job[6]">$job[5]</td>
-                        <td>$job[1]</td>
-                        <td>$job[11]</td>
-                        <td data-sort-value="$job[8]">$job[7]</td>
+                        <td>$job['rule'] $job['skip']</td>
+                        <td data-sort-value="$job['size']">$job['size_units']</td>
+                        <td>$job['title']</td>
+                        <td>$job['cat']</td>
+                        <td data-sort-value="$job['age_ms']">$job['age']</td>
                     </tr>
                 <!--#end for#-->
             </table>
@@ -466,14 +466,20 @@
                             <th>$T('size')</th>
                             <th width="60%">$T('sort-title')</th>
                             <th>$T('category')</th>
+                            <th>$T('source')</th>
                         </tr>
                     </thead>
                     <!--#for $job in $downloaded#-->
                         <tr class="infoTableSeperator">
-                            <td data-sort-value="$job[10]">$job[9]</td>
-                            <td data-sort-value="$job[6]">$job[5]</td>
-                            <td>$job[1]</td>
-                            <td>$job[11]</td>
+                            <td data-sort-value="$job['time_downloaded_ms']">$job['time_downloaded']</td>
+                            <td data-sort-value="$job['size']">$job['size_units']</td>
+                            <td>$job['title']</td>
+                            <td>$job['cat']</td>
+                            <td data-sort-value="$job['baselink']" title="$job['baselink']">
+                                <!--#if $job['baselink']#-->
+                                <div class="favicon source-icon" style="background-image: url(//$job['baselink']/favicon.ico);" data-domain="$job['baselink']"></div>
+                                <!--#end if#-->
+                            </td>
                         </tr>
                     <!--#end for#-->
                 </table>

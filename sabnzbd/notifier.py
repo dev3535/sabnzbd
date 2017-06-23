@@ -120,6 +120,7 @@ def check_classes(gtype, section):
         logging.debug('Incorrect Notify option %s:%s_prio_%s', section, section, gtype)
         return False
 
+
 def get_prio(gtype, section):
     """ Check if `gtype` is enabled in `section` """
     try:
@@ -132,7 +133,7 @@ def get_prio(gtype, section):
 def send_notification(title, msg, gtype):
     """ Send Notification message """
     # Notification Center
-    if sabnzbd.DARWIN_VERSION > 7 and sabnzbd.cfg.ncenter_enable():
+    if sabnzbd.DARWIN and sabnzbd.cfg.ncenter_enable():
         if check_classes(gtype, 'ncenter'):
             send_notification_center(title, msg, gtype)
 
@@ -176,6 +177,7 @@ def send_notification(title, msg, gtype):
     # NTFOSD
     if have_ntfosd() and sabnzbd.cfg.ntfosd_enable() and check_classes(gtype, 'ntfosd'):
         send_notify_osd(title, msg)
+
 
 def reset_growl():
     """ Reset Growl (after changing language) """
@@ -249,7 +251,6 @@ def send_growl(title, msg, gtype, test=None):
         if not _GROWL:
             _GROWL, error = register_growl(growl_server, growl_password)
         if _GROWL:
-            if 0: assert isinstance(_GROWL, GrowlNotifier) # Assert only for debug purposes
             _GROWL_REG = True
             if isinstance(msg, unicode):
                 msg = msg.decode('utf-8')
@@ -347,8 +348,6 @@ def ncenter_path():
 
 def send_notification_center(title, msg, gtype):
     """ Send message to Mountain Lion's Notification Center """
-    if sabnzbd.DARWIN_VERSION < 8:
-        return T('Not available')  # : Function is not available on this OS
     tool = ncenter_path()
     if tool:
         try:
@@ -516,6 +515,7 @@ def send_nscript(title, msg, gtype, force=False, test=None):
         else:
             return T('Notification script "%s" does not exist') % script_path
     return ''
+
 
 def send_windows(title, msg, gtype):
     if sabnzbd.WINTRAY and not sabnzbd.WINTRAY.terminate:

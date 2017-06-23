@@ -52,20 +52,17 @@ RENAMES_FILE = '__renames__'
 ATTRIB_FILE = 'SABnzbd_attrib'
 REPAIR_REQUEST = 'repair-all.sab'
 
-DB_HISTORY_VERSION = 1
-DB_QUEUE_VERSION = 1
+SABYENC_VERSION_REQUIRED = '3.0.2'
 
+DB_HISTORY_VERSION = 1
 DB_HISTORY_NAME = 'history%s.db' % DB_HISTORY_VERSION
-DB_QUEUE_NAME = 'queue%s.db' % DB_QUEUE_VERSION
 
 DEF_DOWNLOAD_DIR = 'Downloads/incomplete'
 DEF_COMPLETE_DIR = 'Downloads/complete'
 DEF_ADMIN_DIR = 'admin'
-DEF_LOG_DIR = 'logs'
 DEF_NZBBACK_DIR = ''
 DEF_LANGUAGE = 'locale'
 DEF_INTERFACES = 'interfaces'
-DEF_INT_LANGUAGE = 'locale'
 DEF_EMAIL_TMPL = 'email'
 DEF_STDCONFIG = 'Config'
 DEF_STDINTF = 'Glitter'
@@ -73,20 +70,14 @@ DEF_SKIN_COLORS = {'smpl': 'white', 'Glitter': 'Default', 'plush': 'gold'}
 DEF_MAIN_TMPL = 'templates/main.tmpl'
 DEF_INI_FILE = 'sabnzbd.ini'
 DEF_HOST = '127.0.0.1'
-DEF_PORT_WIN = 8080
-DEF_PORT_UNIX = 8080
-DEF_PORT_WIN_SSL = 9090
-DEF_PORT_UNIX_SSL = 9090
+DEF_PORT = 8080
 DEF_WORKDIR = 'sabnzbd'
 DEF_LOG_FILE = 'sabnzbd.log'
 DEF_LOG_ERRFILE = 'sabnzbd.error.log'
 DEF_LOG_CHERRY = 'cherrypy.log'
+DEF_CACHE_LIMIT = '450M'
 DEF_TIMEOUT = 60
-MIN_TIMEOUT = 10
-MAX_TIMEOUT = 200
-DEF_LOGLEVEL = 1
 DEF_SCANRATE = 5
-DEF_QRATE = 0
 MAX_DECODE_QUEUE = 10
 LIMIT_DECODE_QUEUE = 100
 MAX_WARNINGS = 20
@@ -102,7 +93,7 @@ PAUSED_PRIORITY = -2
 DUP_PRIORITY = -3
 STOP_PRIORITY = -4
 
-STAGES = { 'Source' : 0, 'Download' : 1, 'Servers' : 2, 'Repair' : 3, 'Filejoin' : 4, 'Unpack' : 5, 'Script' : 6 }
+STAGES = {'Source': 0, 'Download': 1, 'Servers': 2, 'Repair': 3, 'Filejoin': 4, 'Unpack': 5, 'Script': 6}
 
 VALID_ARCHIVES = ('.zip', '.rar', '.7z')
 
@@ -127,14 +118,14 @@ date_match = [r'(\d{4})\W(\d{1,2})\W(\d{1,2})',  # 2008-10-16
 
 year_match = r'[\W]([1|2]\d{3})([^\w]|$)'  # Something '(YYYY)' or '.YYYY.' or ' YYYY '
 
-sample_match = r'((^|[\W_])sample\d*[\W_])'  # something-sample.avi
+sample_match = r'((^|[\W_])(sample|proof))'  # something-sample or something-proof
 
 
 class Status():
     COMPLETED = 'Completed'         # PP: Job is finished
     CHECKING = 'Checking'           # Q:  Pre-check is running
     DOWNLOADING = 'Downloading'     # Q:  Normal downloading
-    EXTRACTING = 'Extracting'       # PP: Archives are being extraced
+    EXTRACTING = 'Extracting'       # PP: Archives are being extracted
     FAILED = 'Failed'               # PP: Job has failed, now in History
     FETCHING = 'Fetching'           # Q:  Job is downloading extra par2 files
     GRABBING = 'Grabbing'           # Q:  Getting an NZB from an external site

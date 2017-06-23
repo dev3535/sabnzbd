@@ -56,8 +56,6 @@ if [int(n) for n in cherrypy.__version__.split('.')] < [8, 1, 2]:
     print 'Sorry, requires Python module Cherrypy 8.1.2+ (use the included version)'
     sys.exit(1)
 
-from cherrypy import _cpserver
-
 SQLITE_DLL = True
 try:
     from sqlite3 import version as sqlite3_version
@@ -90,8 +88,8 @@ from sabnzbd.misc import real_path, \
     check_latest_version, exit_sab, \
     split_host, get_ext, create_https_certificates, \
     windows_variant, ip_extract, set_serv_parms, get_serv_parms, globber_full
-from sabnzbd.panic import panic_tmpl, panic_port, panic_host, panic_fwall, \
-    panic_sqlite, panic, launch_a_browser, panic_xport
+from sabnzbd.panic import panic_tmpl, panic_port, panic_host, \
+    panic_sqlite, panic, launch_a_browser
 import sabnzbd.scheduler as scheduler
 import sabnzbd.config as config
 import sabnzbd.cfg
@@ -128,24 +126,6 @@ def guard_loglevel():
     """ Callback function for guarding loglevel """
     global LOG_FLAG
     LOG_FLAG = True
-
-
-class FilterCP3:
-    # Filter out all CherryPy3-Access logging that we receive,
-    # because we have the root logger
-
-    def __init__(self):
-        pass
-
-    def filter(self, record):
-        _cplogging = record.module == '_cplogging'
-        # Python2.4 fix
-        # record has no attribute called funcName under python 2.4
-        if hasattr(record, 'funcName'):
-            access = record.funcName == 'access'
-        else:
-            access = True
-        return not (_cplogging and access)
 
 
 class guiHandler(logging.Handler):
@@ -202,10 +182,9 @@ def print_help():
     print "  -f  --config-file <ini>  Location of config file"
     print "  -s  --server <srv:port>  Listen on server:port [*]"
     print "  -t  --templates <templ>  Template directory [*]"
-    print "  -2  --template2 <templ>  Secondary template dir [*]"
     print
     print "  -l  --logging <0..2>     Set logging level (-1=off, 0= least, 2= most) [*]"
-    print "  -w  --weblogging <0..2>  Set cherrypy logging (0= off, 1= on, 2= file-only) [*]"
+    print "  -w  --weblogging         Enable cherrypy access logging"
     print
     print "  -b  --browser <0..1>     Auto browser launch (0= off, 1= on) [*]"
     if sabnzbd.WIN32:
@@ -215,7 +194,6 @@ def print_help():
         print "      --pid <path>         Create a PID file in the given folder (full path)"
         print "      --pidfile <path>     Create a PID file with the given name (full path)"
     print
-    print "      --force              Discard web-port timeout (see Wiki!)"
     print "  -h  --help               Print this message"
     print "  -v  --version            Print version information"
     print "  -c  --clean              Remove queue, cache and logs"
@@ -224,6 +202,7 @@ def print_help():
     print "      --repair-all         Try to reconstruct the queue from the incomplete folder"
     print "                           with full data reconstruction"
     print "      --https <port>       Port to use for HTTPS server"
+    print "      --no-login           Start with username and password reset"
     print "      --log-all            Log all article handling (for developers)"
     print "      --console            Force console logging for OSX app"
     print "      --new                Run a new instance of SABnzbd"
@@ -274,9 +253,7 @@ def Bail_Out(browserhost, cherryport, err=''):
     """ Abort program because of CherryPy troubles """
     logging.error(T('Failed to start web-interface') + ' : ' + str(err))
     if not sabnzbd.DAEMON:
-        if '13' in err:
-            panic_xport(browserhost, cherryport)
-        elif '49' in err:
+        if '49' in err:
             panic_host(browserhost, cherryport)
         else:
             panic_port(browserhost, cherryport)
@@ -304,9 +281,6 @@ def Web_Template(key, defweb, wdir):
     logging.info("Web dir is %s", full_dir)
 
     if not os.path.exists(full_main):
-        # Temporarily fix that allows missing Config
-        if defweb == DEF_STDCONFIG:
-            return ''
         # end temp fix
         logging.warning(T('Cannot find web template: %s, trying standard template'), full_main)
         full_dir = real_path(sabnzbd.DIR_INTERFACES, DEF_STDINTF)
@@ -315,8 +289,6 @@ def Web_Template(key, defweb, wdir):
             logging.exception('Cannot find standard template: %s', full_dir)
             panic_tmpl(full_dir)
             exit_sab(1)
-
-    # sabnzbd.lang.install_language(real_path(full_dir, DEF_INT_LANGUAGE), sabnzbd.cfg.language(), wdir)
 
     return real_path(full_dir, "templates")
 
@@ -428,13 +400,26 @@ def GetProfileInfo(vista_plus):
 
 def print_modules():
     """ Log all detected optional or external modules """
-    if sabnzbd.decoder.HAVE_YENC:
-        logging.info("_yenc module... found!")
+    if sabnzbd.decoder.SABYENC_ENABLED:
+        # Yes, we have SABYenc, and it's the correct version, so it's enabled
+        logging.info("SABYenc module (v%s)... found!", sabnzbd.constants.SABYENC_VERSION_REQUIRED)
     else:
-        logging.warning(T('_yenc module... NOT found!'))
+        # Something wrong with SABYenc, so let's determine and print what:
+        if sabnzbd.decoder.SABYENC_VERSION:
+            # We have a VERSION, thus a SABYenc module, but it's not the correct version
+            logging.warning(T("SABYenc disabled: no correct version found! (Found v%s, expecting v%s)") % (sabnzbd.decoder.SABYENC_VERSION, sabnzbd.constants.SABYENC_VERSION_REQUIRED))
+        else:
+            # No SABYenc module at all
+            logging.warning(T("SABYenc module... NOT found! Expecting v%s - https://sabnzbd.org/sabyenc") % sabnzbd.constants.SABYENC_VERSION_REQUIRED)
+
+        # No correct SABYenc version or no SABYenc at all, so now we care about old-yEnc
+        if sabnzbd.decoder.HAVE_YENC:
+            logging.info("_yenc module... found!")
+        else:
+            logging.error(T('_yenc module... NOT found!'))
 
     if sabnzbd.HAVE_CRYPTOGRAPHY:
-        logging.info('Cryptography module... found!')
+        logging.info('Cryptography module (v%s)... found!', sabnzbd.HAVE_CRYPTOGRAPHY)
     else:
         logging.info('Cryptography module... NOT found!')
 
@@ -446,11 +431,21 @@ def print_modules():
     if sabnzbd.newsunpack.PAR2C_COMMAND:
         logging.info("par2cmdline binary... found (%s)", sabnzbd.newsunpack.PAR2C_COMMAND)
 
+    if sabnzbd.newsunpack.MULTIPAR_COMMAND:
+        logging.info("MultiPar binary... found (%s)", sabnzbd.newsunpack.MULTIPAR_COMMAND)
+
     if sabnzbd.newsunpack.RAR_COMMAND:
         logging.info("UNRAR binary... found (%s)", sabnzbd.newsunpack.RAR_COMMAND)
 
+        # Report problematic unrar
+        if sabnzbd.newsunpack.RAR_PROBLEM and not sabnzbd.cfg.ignore_wrong_unrar():
+            have_str = '%.2f' % (float(sabnzbd.newsunpack.RAR_VERSION) / 100)
+            want_str = '%.2f' % (float(sabnzbd.constants.REC_RAR_VERSION) / 100)
+            logging.warning(T('Your UNRAR version is %s, we recommend version %s or higher.<br />') % (have_str, want_str))
+        elif not (sabnzbd.WIN32 or sabnzbd.DARWIN):
+            logging.debug('UNRAR binary version %.2f', (float(sabnzbd.newsunpack.RAR_VERSION) / 100))
     else:
-        logging.warning(T('unrar binary... NOT found'))
+        logging.error(T('unrar binary... NOT found'))
 
     if sabnzbd.newsunpack.ZIP_COMMAND:
         logging.info("unzip binary... found (%s)", sabnzbd.newsunpack.ZIP_COMMAND)
@@ -492,6 +487,9 @@ def all_localhosts():
     ips = []
     for item in info:
         item = item[4][0]
+        # Avoid problems on strange Linux settings
+        if not isinstance(item, basestring):
+            continue
         # Only return IPv6 when enabled
         if item not in ips and ('::1' not in item or sabnzbd.cfg.ipv6_hosting()):
             ips.append(item)
@@ -648,7 +646,7 @@ def attach_server(host, port, cert=None, key=None, chain=None):
         http_server = cherrypy._cpserver.Server()
         http_server.bind_addr = (host, port)
         if cert and key:
-            http_server.ssl_provider = 'builtin'
+            http_server.ssl_module = 'builtin'
             http_server.ssl_certificate = cert
             http_server.ssl_private_key = key
             http_server.ssl_certificate_chain = chain
@@ -673,7 +671,7 @@ def find_free_port(host, currentport):
     n = 0
     while n < 10 and currentport <= 49151:
         try:
-            cherrypy.process.servers.check_port(host, currentport, timeout=0.1)
+            cherrypy.process.servers.check_port(host, currentport, timeout=0.025)
             return currentport
         except:
             currentport += 5
@@ -727,24 +725,6 @@ def evaluate_inipath(path):
             return path
 
 
-def cherrypy_logging(log_path, log_handler):
-    """ Setup CherryPy logging """
-    log = cherrypy.log
-    log.access_file = ''
-    log.error_file = ''
-    # Max size of 512KB
-    maxBytes = getattr(log, "rot_maxBytes", 524288)
-    # cherrypy.log cherrypy.log.1 cherrypy.log.2
-    backupCount = getattr(log, "rot_backupCount", 3)
-
-    # Make a new RotatingFileHandler for the error log.
-    fname = getattr(log, "rot_error_file", log_path)
-    h = log_handler(fname, 'a', maxBytes, backupCount)
-    h.setLevel(logging.DEBUG)
-    h.setFormatter(cherrypy._cplogging.logfmt)
-    log.error_log.addHandler(h)
-
-
 def commandline_handler(frozen=True):
     """ Split win32-service commands are true parameters
         Returns:
@@ -775,9 +755,9 @@ def commandline_handler(frozen=True):
     info.extend(sys.argv[slice:])
 
     try:
-        opts, args = getopt.getopt(info, "phdvncw:l:s:f:t:b:2:",
+        opts, args = getopt.getopt(info, "phdvncwl:s:f:t:b:2:",
                                    ['pause', 'help', 'daemon', 'nobrowser', 'clean', 'logging=',
-                                    'weblogging=', 'server=', 'templates', 'ipv6_hosting=',
+                                    'weblogging', 'server=', 'templates', 'ipv6_hosting=',
                                     'template2', 'browser=', 'config-file=', 'force',
                                     'version', 'https=', 'autorestarted', 'repair', 'repair-all',
                                     'log-all', 'no-login', 'pid=', 'new', 'console', 'pidfile=',
@@ -842,10 +822,8 @@ def main():
     clean_up = False
     logging_level = None
     web_dir = None
-    web_dir2 = None
     vista_plus = False
     vista64 = False
-    force_web = False
     repair = 0
     api_url = None
     no_login = False
@@ -876,8 +854,6 @@ def main():
             exit_sab(0)
         elif opt in ('-t', '--templates'):
             web_dir = arg
-        elif opt in ('-2', '--template2'):
-            web_dir2 = arg
         elif opt in ('-s', '--server'):
             (cherryhost, cherryport) = split_host(arg)
         elif opt in ('-n', '--nobrowser'):
@@ -892,13 +868,7 @@ def main():
         elif opt in ('-c', '--clean'):
             clean_up = True
         elif opt in ('-w', '--weblogging'):
-            try:
-                cherrypylogging = int(arg)
-            except:
-                cherrypylogging = -1
-            if cherrypylogging < 0 or cherrypylogging > 2:
-                print_help()
-                exit_sab(1)
+            cherrypylogging = True
         elif opt in ('-l', '--logging'):
             try:
                 logging_level = int(arg)
@@ -912,9 +882,6 @@ def main():
             exit_sab(0)
         elif opt in ('-p', '--pause'):
             pause = True
-        elif opt in ('--force',):
-            force_web = True
-            sabnzbd.RESTART_ARGS.append(opt)
         elif opt in ('--https',):
             https_port = int(arg)
             sabnzbd.RESTART_ARGS.append(opt)
@@ -1032,13 +999,13 @@ def main():
     if sabnzbd.DAEMON:
         if enable_https and https_port:
             try:
-                cherrypy.process.servers.check_port(cherryhost, https_port, timeout=0.1)
+                cherrypy.process.servers.check_port(cherryhost, https_port, timeout=0.05)
             except IOError, error:
                 Bail_Out(browserhost, cherryport)
             except:
                 Bail_Out(browserhost, cherryport, '49')
         try:
-            cherrypy.process.servers.check_port(cherryhost, cherryport, timeout=0.1)
+            cherrypy.process.servers.check_port(cherryhost, cherryport, timeout=0.05)
         except IOError, error:
             Bail_Out(browserhost, cherryport)
         except:
@@ -1051,54 +1018,61 @@ def main():
         if url and check_for_sabnzbd(url, upload_nzbs, autobrowser):
             exit_sab(0)
 
-    # If an instance of sabnzbd(same version) is already running on this port, launch the browser
-    # If another program or sabnzbd version is on this port, try 10 other ports going up in a step of 5
-    # If 'Port is not bound' (firewall) do not do anything (let the script further down deal with that).
-    notify_port_change = False
-
     # SSL
     if enable_https:
         port = https_port or cherryport
         try:
-            cherrypy.process.servers.check_port(browserhost, port, timeout=0.1)
+            cherrypy.process.servers.check_port(browserhost, port, timeout=0.05)
         except IOError, error:
             if str(error) == 'Port not bound.':
                 pass
             else:
                 if not url:
                     url = 'https://%s:%s/sabnzbd/api?' % (browserhost, port)
-                if not sabnzbd.cfg.fixed_ports():
-                    if new_instance or not check_for_sabnzbd(url, upload_nzbs, autobrowser):
-                        newport = find_free_port(browserhost, port)
-                        if newport > 0:
+                if new_instance or not check_for_sabnzbd(url, upload_nzbs, autobrowser):
+                    # Bail out if we have fixed our ports after first start-up
+                    if sabnzbd.cfg.fixed_ports():
+                        Bail_Out(browserhost, cherryport)
+                    # Find free port to bind
+                    newport = find_free_port(browserhost, port)
+                    if newport > 0:
+                        # Save the new port
+                        if https_port:
+                            https_port = newport
                             sabnzbd.cfg.https_port.set(newport)
-                            notify_port_change = True
-                            if https_port:
-                                https_port = newport
-                            else:
-                                http_port = newport
+                        else:
+                            # In case HTTPS == HTTP port
+                            cherryport = newport
+                            sabnzbd.cfg.port.set(newport)
         except:
+            # Something else wrong, probably badly specified host
             Bail_Out(browserhost, cherryport, '49')
 
     # NonSSL check if there's no HTTPS or we only use 1 port
     if not (enable_https and not https_port):
         try:
-            cherrypy.process.servers.check_port(browserhost, cherryport, timeout=0.1)
+            cherrypy.process.servers.check_port(browserhost, cherryport, timeout=0.05)
         except IOError, error:
             if str(error) == 'Port not bound.':
                 pass
             else:
                 if not url:
                     url = 'http://%s:%s/sabnzbd/api?' % (browserhost, cherryport)
-                if not sabnzbd.cfg.fixed_ports():
-                    if new_instance or not check_for_sabnzbd(url, upload_nzbs, autobrowser):
-                        port = find_free_port(browserhost, cherryport)
-                        if port > 0:
-                            sabnzbd.cfg.cherryport.set(port)
-                            notify_port_change = True
-                            cherryport = port
+                if new_instance or not check_for_sabnzbd(url, upload_nzbs, autobrowser):
+                    # Bail out if we have fixed our ports after first start-up
+                    if sabnzbd.cfg.fixed_ports():
+                        Bail_Out(browserhost, cherryport)
+                    # Find free port to bind
+                    port = find_free_port(browserhost, cherryport)
+                    if port > 0:
+                        sabnzbd.cfg.cherryport.set(port)
+                        cherryport = port
         except:
+            # Something else wrong, probably badly specified host
             Bail_Out(browserhost, cherryport, '49')
+
+    # We found a port, now we never check again
+    sabnzbd.cfg.fixed_ports.set(True)
 
     if logging_level is None:
         logging_level = sabnzbd.cfg.log_level()
@@ -1133,7 +1107,6 @@ def main():
 
         logformat = '%(asctime)s::%(levelname)s::[%(module)s:%(lineno)d] %(message)s'
         rollover_log.setFormatter(logging.Formatter(logformat))
-        rollover_log.addFilter(FilterCP3())
         sabnzbd.LOGHANDLER = rollover_log
         logger.addHandler(rollover_log)
         logger.setLevel(LOGLEVELS[logging_level + 1])
@@ -1163,7 +1136,6 @@ def main():
 
             if consoleLogging:
                 console = logging.StreamHandler()
-                console.addFilter(FilterCP3())
                 console.setLevel(LOGLEVELS[logging_level + 1])
                 console.setFormatter(logging.Formatter(logformat))
                 logger.addHandler(console)
@@ -1192,11 +1164,18 @@ def main():
         logging.info('Platform = %s', os.name)
     logging.info('Python-version = %s', sys.version)
     logging.info('Arguments = %s', sabnzbd.CMDLINE)
+
+    # Find encoding; relevant for unrar activities
     try:
-        logging.info('Preferred encoding = %s', locale.getpreferredencoding())
+        preferredencoding = locale.getpreferredencoding()
+        logging.info('Preferred encoding = %s', preferredencoding)
     except:
         logging.info('Preferred encoding = ERROR')
+        preferredencoding = ''
 
+    # On Linux/FreeBSD/Unix "UTF-8" is strongly, strongly adviced:
+    if not sabnzbd.WIN32 and not sabnzbd.DARWIN and not ('utf' in preferredencoding.lower() and '8' in preferredencoding.lower()):
+        logging.warning(T("SABnzbd was started with encoding %s, this should be UTF-8. Expect problems with Unicoded file and directory names in downloads.") % preferredencoding)
 
     if sabnzbd.cfg.log_level() > 1:
         from sabnzbd.getipaddress import localipv4, publicipv4, ipv6
@@ -1230,17 +1209,6 @@ def main():
         if cpumodel:
             logging.debug('CPU model name is %s', cpumodel)
 
-    # OSX 10.5 I/O priority setting
-    if sabnzbd.DARWIN:
-        logging.info('[osx] IO priority setting')
-        try:
-            from ctypes import cdll
-            libc = cdll.LoadLibrary('/usr/lib/libc.dylib')
-            boolSetResult = libc.setiopolicy_np(0, 1, 3)  # @UnusedVariable
-            logging.info('[osx] IO priority set to throttle for process scope')
-        except:
-            logging.info('[osx] IO priority setting not supported')
-
     logging.info('Read INI file %s', inifile)
 
     if autobrowser is not None:
@@ -1256,22 +1224,12 @@ def main():
 
     os.chdir(sabnzbd.DIR_PROG)
 
-    web_dir = Web_Template(sabnzbd.cfg.web_dir, DEF_STDINTF, fix_webname(web_dir))
-    web_dir2 = Web_Template(sabnzbd.cfg.web_dir2, '', fix_webname(web_dir2))
-    web_dirc = Web_Template(None, DEF_STDCONFIG, '')
+    sabnzbd.WEB_DIR = Web_Template(sabnzbd.cfg.web_dir, DEF_STDINTF, fix_webname(web_dir))
+    sabnzbd.WEB_DIR_CONFIG = Web_Template(None, DEF_STDCONFIG, '')
+    sabnzbd.WIZARD_DIR = os.path.join(sabnzbd.DIR_INTERFACES, 'wizard')
 
-    wizard_dir = os.path.join(sabnzbd.DIR_INTERFACES, 'wizard')
-    # sabnzbd.lang.install_language(os.path.join(wizard_dir, DEF_INT_LANGUAGE), sabnzbd.cfg.language(), 'wizard')
-
-    sabnzbd.WEB_DIR = web_dir
-    sabnzbd.WEB_DIR2 = web_dir2
-    sabnzbd.WEB_DIRC = web_dirc
-    sabnzbd.WIZARD_DIR = wizard_dir
-
-    sabnzbd.WEB_COLOR = CheckColor(sabnzbd.cfg.web_color(), web_dir)
+    sabnzbd.WEB_COLOR = CheckColor(sabnzbd.cfg.web_color(), sabnzbd.WEB_DIR)
     sabnzbd.cfg.web_color.set(sabnzbd.WEB_COLOR)
-    sabnzbd.WEB_COLOR2 = CheckColor(sabnzbd.cfg.web_color2(), web_dir2)
-    sabnzbd.cfg.web_color2.set(sabnzbd.WEB_COLOR2)
 
     if fork and not sabnzbd.WIN32:
         daemonize()
@@ -1298,23 +1256,6 @@ def main():
 
     logging.info("SSL version %s", sabnzbd.utils.sslinfo.ssl_version())
     logging.info("SSL supported protocols %s", str(sabnzbd.utils.sslinfo.ssl_protocols_labels()))
-
-    cherrylogtoscreen = False
-    sabnzbd.WEBLOGFILE = None
-
-    if cherrypylogging:
-        if logdir:
-            sabnzbd.WEBLOGFILE = os.path.join(logdir, DEF_LOG_CHERRY)
-        # Define our custom logger for cherrypy errors
-        cherrypy_logging(sabnzbd.WEBLOGFILE, logging.handlers.RotatingFileHandler)
-        if not fork:
-            try:
-                x = sys.stderr.fileno
-                x = sys.stdout.fileno
-                if cherrypylogging == 1:
-                    cherrylogtoscreen = True
-            except:
-                pass
 
     https_cert = sabnzbd.cfg.https_cert.get_path()
     https_key = sabnzbd.cfg.https_key.get_path()
@@ -1355,7 +1296,7 @@ def main():
             cherryport = https_port
         elif multilocal:
             # Extra HTTPS port for secondary localhost
-            attach_server(hosts[1], cherryport, https_cert, https_key)
+            attach_server(hosts[1], cherryport, https_cert, https_key, https_chain)
 
         cherrypy.config.update({'server.ssl_module': 'builtin',
                                 'server.ssl_certificate': https_cert,
@@ -1382,59 +1323,47 @@ def main():
                             'server.socket_host': cherryhost,
                             'server.socket_port': cherryport,
                             'server.shutdown_timeout': 0,
-                            'log.screen': cherrylogtoscreen,
+                            'log.screen': False,
                             'engine.autoreload.on': False,
                             'tools.encode.on': True,
                             'tools.gzip.on': True,
                             'tools.gzip.mime_types': mime_gzip,
                             'request.show_tracebacks': True,
-                            'checker.check_localhost': bool(consoleLogging),
                             'error_page.401': sabnzbd.panic.error_page_401,
                             'error_page.404': sabnzbd.panic.error_page_404
                             })
 
-    forced_mime_types = {'css': 'text/css', 'js': 'application/javascript'}
-    static = {'tools.staticdir.on': True, 'tools.staticdir.dir': os.path.join(web_dir, 'static'), 'tools.staticdir.content_types': forced_mime_types}
-    staticcfg = {'tools.staticdir.on': True, 'tools.staticdir.dir': os.path.join(web_dirc, 'staticcfg'), 'tools.staticdir.content_types': forced_mime_types}
-    wizard_static = {'tools.staticdir.on': True, 'tools.staticdir.dir': os.path.join(wizard_dir, 'static'), 'tools.staticdir.content_types': forced_mime_types}
+    # Do we want CherryPy Logging? Cannot be done via the config
+    if cherrypylogging:
+        sabnzbd.WEBLOGFILE = os.path.join(logdir, DEF_LOG_CHERRY)
+        cherrypy.log.screen = True
+        cherrypy.log.access_log.propagate = True
+        cherrypy.log.access_file = str(sabnzbd.WEBLOGFILE)
+    else:
+        cherrypy.log.access_log.propagate = False
 
-    appconfig = {'/sabnzbd/api': {'tools.basic_auth.on': False},
-                 '/api': {'tools.basic_auth.on': False},
-                 '/m/api': {'tools.basic_auth.on': False},
+    # Force mimetypes (OS might overwrite them)
+    forced_mime_types = {'css': 'text/css', 'js': 'application/javascript'}
+
+    static = {'tools.staticdir.on': True, 'tools.staticdir.dir': os.path.join(sabnzbd.WEB_DIR, 'static'), 'tools.staticdir.content_types': forced_mime_types}
+    staticcfg = {'tools.staticdir.on': True, 'tools.staticdir.dir': os.path.join(sabnzbd.WEB_DIR_CONFIG, 'staticcfg'), 'tools.staticdir.content_types': forced_mime_types}
+    wizard_static = {'tools.staticdir.on': True, 'tools.staticdir.dir': os.path.join(sabnzbd.WIZARD_DIR, 'static'), 'tools.staticdir.content_types': forced_mime_types}
+
+    appconfig = {'/api': {'tools.basic_auth.on': False},
                  '/rss': {'tools.basic_auth.on': False},
-                 '/sabnzbd/rss': {'tools.basic_auth.on': False},
-                 '/m/rss': {'tools.basic_auth.on': False},
-                 '/sabnzbd/shutdown': {'streamResponse': True},
-                 '/sabnzbd/static': static,
                  '/static': static,
-                 '/sabnzbd/wizard/static': wizard_static,
                  '/wizard/static': wizard_static,
-                 '/favicon.ico': {'tools.staticfile.on': True, 'tools.staticfile.filename': os.path.join(web_dirc, 'staticcfg', 'ico', 'favicon.ico')},
-                 '/sabnzbd/staticcfg': staticcfg,
+                 '/favicon.ico': {'tools.staticfile.on': True, 'tools.staticfile.filename': os.path.join(sabnzbd.WEB_DIR_CONFIG, 'staticcfg', 'ico', 'favicon.ico')},
                  '/staticcfg': staticcfg
                  }
 
-    if web_dir2:
-        static2 = {'tools.staticdir.on': True, 'tools.staticdir.dir': os.path.join(web_dir2, 'static'), 'tools.staticdir.content_types': forced_mime_types}
-        appconfig['/sabnzbd/m/api'] = {'tools.basic_auth.on': False}
-        appconfig['/sabnzbd/m/rss'] = {'tools.basic_auth.on': False}
-        appconfig['/sabnzbd/m/shutdown'] = {'streamResponse': True}
-        appconfig['/sabnzbd/m/static'] = static2
-        appconfig['/m/static'] = static2
-        appconfig['/sabnzbd/m/wizard/static'] = wizard_static
-        appconfig['/m/wizard/static'] = wizard_static
-        appconfig['/sabnzbd/m/staticcfg'] = staticcfg
-        appconfig['/m/staticcfg'] = staticcfg
-
-    login_page = sabnzbd.interface.MainPage(web_dir, '/', web_dir2, '/m/', web_dirc, first=2)
-    cherrypy.tree.mount(login_page, '/', config=appconfig)
+    # Make available from both URLs
+    main_page = sabnzbd.interface.MainPage()
+    cherrypy.tree.mount(main_page, '/', config=appconfig)
+    cherrypy.tree.mount(main_page, '/sabnzbd/', config=appconfig)
 
     # Set authentication for CherryPy
     sabnzbd.interface.set_auth(cherrypy.config)
-
-    # Notify if port was changed
-    if notify_port_change:
-        logging.warning(T('Could not bind to configured port. Port changed to %s') % cherryport)
 
     logging.info('Starting web-interface on %s:%s', cherryhost, cherryport)
 

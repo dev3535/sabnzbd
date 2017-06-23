@@ -21,10 +21,9 @@ sabnzbd.cfg - Configuration Parameters
 import re
 
 import sabnzbd
-from sabnzbd.constants import DEF_HOST, DEF_PORT_WIN_SSL, DEF_PORT_WIN, DEF_STDINTF, \
-    DEF_DOWNLOAD_DIR, DEF_NZBBACK_DIR, DEF_PORT_UNIX_SSL, \
-    DEF_SCANRATE, DEF_PORT_UNIX, DEF_COMPLETE_DIR, \
-    DEF_ADMIN_DIR
+from sabnzbd.constants import DEF_HOST, DEF_PORT, DEF_STDINTF, DEF_ADMIN_DIR, \
+    DEF_DOWNLOAD_DIR, DEF_NZBBACK_DIR, DEF_SCANRATE, DEF_COMPLETE_DIR, QUEUE_VERSION
+
 from sabnzbd.config import OptionBool, OptionNumber, OptionPassword, \
     OptionDir, OptionStr, OptionList, no_nonsense, \
     validate_octal, validate_safedir, \
@@ -63,8 +62,8 @@ else:
 ##############################################################################
 # Configuration instances
 ##############################################################################
-quick_check = OptionBool('misc', 'quick_check', True)
 sfv_check = OptionBool('misc', 'sfv_check', True)
+quick_check_ext_ignore = OptionList('misc', 'quick_check_ext_ignore', ['nfo', 'sfv', 'srr'])
 
 email_server = OptionStr('misc', 'email_server', validation=validate_server)
 email_to = OptionList('misc', 'email_to', validation=validate_email)
@@ -94,7 +93,6 @@ enable_filejoin = OptionBool('misc', 'enable_filejoin', True)
 enable_tsjoin = OptionBool('misc', 'enable_tsjoin', True)
 enable_par_cleanup = OptionBool('misc', 'enable_par_cleanup', True)
 enable_all_par = OptionBool('misc', 'enable_all_par', False)
-never_repair = OptionBool('misc', 'never_repair', False)
 ignore_unrar_dates = OptionBool('misc', 'ignore_unrar_dates', False)
 overwrite_files = OptionBool('misc', 'overwrite_files', False)
 flat_unpack = OptionBool('misc', 'flat_unpack', False)
@@ -104,7 +102,7 @@ nice = OptionStr('misc', 'nice', '', validation=no_nonsense)
 ionice = OptionStr('misc', 'ionice', '', validation=no_nonsense)
 ignore_wrong_unrar = OptionBool('misc', 'ignore_wrong_unrar', False)
 par2_multicore = OptionBool('misc', 'par2_multicore', True)
-allow_64bit_tools = OptionBool('misc', 'allow_64bit_tools', True)
+multipar = OptionBool('misc', 'multipar', sabnzbd.WIN32)
 allow_streaming = OptionBool('misc', 'allow_streaming', False)
 pre_check = OptionBool('misc', 'pre_check', False)
 fail_hopeless_jobs = OptionBool('misc', 'fail_hopeless_jobs', True)
@@ -113,7 +111,6 @@ req_completion_rate = OptionNumber('misc', 'req_completion_rate', 100.2, 100, 20
 rating_enable = OptionBool('misc', 'rating_enable', False)
 rating_host = OptionStr('misc', 'rating_host', 'api.oznzb.com')
 rating_api_key = OptionStr('misc', 'rating_api_key')
-rating_feedback = OptionBool('misc', 'rating_feedback', True)
 rating_filter_enable = OptionBool('misc', 'rating_filter_enable', False)
 rating_filter_abort_audio = OptionNumber('misc', 'rating_filter_abort_audio', 0)
 rating_filter_abort_video = OptionNumber('misc', 'rating_filter_abort_video', 0)
@@ -144,13 +141,11 @@ no_series_dupes = OptionNumber('misc', 'no_series_dupes', 0)
 backup_for_duplicates = OptionBool('misc', 'backup_for_duplicates', True)
 
 ignore_samples = OptionBool('misc', 'ignore_samples', False)
-create_group_folders = OptionBool('misc', 'create_group_folders', False)
 auto_sort = OptionBool('misc', 'auto_sort', False)
 propagation_delay = OptionNumber('misc', 'propagation_delay', 0)
 folder_rename = OptionBool('misc', 'folder_rename', True)
 folder_max_length = OptionNumber('misc', 'folder_max_length', DEF_FOLDER_MAX, 20, 65000)
 pause_on_pwrar = OptionNumber('misc', 'pause_on_pwrar', 1)
-prio_sort_list = OptionList('misc', 'prio_sort_list')
 enable_meta = OptionBool('misc', 'enable_meta', True)
 
 safe_postproc = OptionBool('misc', 'safe_postproc', True)
@@ -189,7 +184,6 @@ complete_dir = OptionDir('misc', 'complete_dir', DEF_COMPLETE_DIR, create=False,
 script_dir = OptionDir('misc', 'script_dir', create=True, writable=False)
 nzb_backup_dir = OptionDir('misc', 'nzb_backup_dir', DEF_NZBBACK_DIR)
 admin_dir = OptionDir('misc', 'admin_dir', DEF_ADMIN_DIR, validation=validate_safedir)
-# log_dir = OptionDir('misc', 'log_dir', 'logs')
 dirscan_dir = OptionDir('misc', 'dirscan_dir', create=False)
 dirscan_speed = OptionNumber('misc', 'dirscan_speed', DEF_SCANRATE, 0, 3600)
 size_limit = OptionStr('misc', 'size_limit', '0')
@@ -201,31 +195,23 @@ sanitize_safe = OptionBool('misc', 'sanitize_safe', False)
 api_logging = OptionBool('misc', 'api_logging', True)
 
 cherryhost = OptionStr('misc', 'host', DEF_HOST)
-if sabnzbd.WIN32:
-    cherryport = OptionStr('misc', 'port', DEF_PORT_WIN)
-else:
-    cherryport = OptionStr('misc', 'port', DEF_PORT_UNIX)
-if sabnzbd.WIN32:
-    https_port = OptionStr('misc', 'https_port', DEF_PORT_WIN_SSL)
-else:
-    https_port = OptionStr('misc', 'https_port', DEF_PORT_UNIX_SSL)
+cherryport = OptionStr('misc', 'port', DEF_PORT)
+https_port = OptionStr('misc', 'https_port')
 
 username = OptionStr('misc', 'username')
 password = OptionPassword('misc', 'password')
 html_login = OptionBool('misc', 'html_login', True)
-login_realm = OptionStr('misc', 'login_realm', 'SABnzbd')
 bandwidth_perc = OptionNumber('misc', 'bandwidth_perc', 0, 0, 100)
 bandwidth_max = OptionStr('misc', 'bandwidth_max')
 refresh_rate = OptionNumber('misc', 'refresh_rate', 0)
 rss_rate = OptionNumber('misc', 'rss_rate', 60, 15, 24 * 60)
 cache_limit = OptionStr('misc', 'cache_limit')
 web_dir = OptionStr('misc', 'web_dir', DEF_STDINTF)
-web_dir2 = OptionStr('misc', 'web_dir2')
 web_color = OptionStr('misc', 'web_color', '')
-web_color2 = OptionStr('misc', 'web_color2')
 cleanup_list = OptionList('misc', 'cleanup_list')
-warned_old_queue = OptionBool('misc', 'warned_old_queue9', False)
+warned_old_queue = OptionNumber('misc', 'warned_old_queue', QUEUE_VERSION)
 notified_new_skin = OptionNumber('misc', 'notified_new_skin', 0)
+converted_nzo_pickles = OptionBool('misc', 'converted_nzo_pickles', False)
 
 unwanted_extensions = OptionList('misc', 'unwanted_extensions')
 action_on_unwanted_extensions = OptionNumber('misc', 'action_on_unwanted_extensions', 0)
@@ -234,7 +220,6 @@ log_dir = OptionDir('misc', 'log_dir', 'logs', validation=validate_notempty)
 log_level = OptionNumber('logging', 'log_level', 1, -1, 2)
 log_size = OptionStr('logging', 'max_log_size', '5242880')
 log_backups = OptionNumber('logging', 'log_backups', 5, 1, 1024)
-log_new = OptionBool('logging', 'log_new', False)
 
 https_cert = OptionDir('misc', 'https_cert', 'server.cert', create=False)
 https_key = OptionDir('misc', 'https_key', 'server.key', create=False)
@@ -242,13 +227,9 @@ https_chain = OptionDir('misc', 'https_chain', create=False)
 enable_https = OptionBool('misc', 'enable_https', False)
 
 language = OptionStr('misc', 'language', 'en')
-unpack_check = OptionBool('misc', 'unpack_check', True)
 no_penalties = OptionBool('misc', 'no_penalties', False)
 load_balancing = OptionNumber('misc', 'load_balancing', 2)
 ipv6_servers = OptionNumber('misc', 'ipv6_servers', 1, 0, 2)
-
-# Internal options, not saved in INI file
-debug_delay = OptionNumber('misc', 'debug_delay', 0, add=False)
 
 api_key = OptionStr('misc', 'api_key', create_api_key())
 nzb_key = OptionStr('misc', 'nzb_key', create_api_key())
@@ -263,7 +244,7 @@ ipv6_hosting = OptionBool('misc', 'ipv6_hosting', False)
 fixed_ports = OptionBool('misc', 'fixed_ports', False)
 
 # [ncenter]
-ncenter_enable = OptionBool('ncenter', 'ncenter_enable', sabnzbd.DARWIN_VERSION > 7)
+ncenter_enable = OptionBool('ncenter', 'ncenter_enable', sabnzbd.DARWIN)
 ncenter_prio_startup = OptionBool('ncenter', 'ncenter_prio_startup', True)
 ncenter_prio_download = OptionBool('ncenter', 'ncenter_prio_download', False)
 ncenter_prio_pp = OptionBool('ncenter', 'ncenter_prio_pp', False)
@@ -305,7 +286,7 @@ ntfosd_prio_queue_done = OptionBool('ntfosd', 'ntfosd_prio_queue_done', True)
 ntfosd_prio_other = OptionBool('ntfosd', 'ntfosd_prio_other', False)
 
 # [growl]
-growl_enable = OptionBool('growl', 'growl_enable', sabnzbd.DARWIN and sabnzbd.DARWIN_VERSION < 8)
+growl_enable = OptionBool('growl', 'growl_enable', False)
 growl_server = OptionStr('growl', 'growl_server')
 growl_password = OptionPassword('growl', 'growl_password')
 growl_prio_startup = OptionBool('growl', 'growl_prio_startup', True)
@@ -394,7 +375,6 @@ osx_speed = OptionBool('misc', 'osx_speed', True)
 keep_awake = OptionBool('misc', 'keep_awake', True)
 win_menu = OptionBool('misc', 'win_menu', True)
 allow_incomplete_nzb = OptionBool('misc', 'allow_incomplete_nzb', False)
-prospective_par_download = OptionBool('misc', 'prospective_par_download', True)
 marker_file = OptionStr('misc', 'nomedia_marker', '')
 wait_ext_drive = OptionNumber('misc', 'wait_ext_drive', 5, 1, 60)
 queue_limit = OptionNumber('misc', 'queue_limit', 20, 0)

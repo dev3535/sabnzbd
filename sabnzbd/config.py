@@ -26,7 +26,6 @@ import threading
 import shutil
 import sabnzbd.misc
 from sabnzbd.constants import CONFIG_VERSION, NORMAL_PRIORITY, DEFAULT_PRIORITY, MAX_WIN_DFOLDER
-from sabnzbd.utils import listquote
 from sabnzbd.utils import configobj
 from sabnzbd.decorators import synchronized
 
@@ -42,6 +41,8 @@ database = {}               # Holds the option dictionary
 
 modified = False            # Signals a change in option dictionary
                             # Should be reset after saving to settings file
+
+paramfinder = re.compile(r'''(?:'.*?')|(?:".*?")|(?:[^'",\s][^,]*)''')
 
 
 class Option(object):
@@ -79,7 +80,7 @@ class Option(object):
 
     def get(self):
         """ Retrieve value field """
-        if self.__value != None:
+        if self.__value is not None:
             return self.__value
         else:
             return self.__default_val
@@ -260,7 +261,7 @@ class OptionList(Option):
                 if '"' not in value and ',' not in value:
                     value = value.split()
                 else:
-                    value = listquote.simplelist(value)
+                    value = paramfinder.findall(value)
             if self.__validation:
                 error, value = self.__validation(value)
             if not error:
@@ -270,6 +271,14 @@ class OptionList(Option):
     def get_string(self):
         """ Return the list as a comma-separated string """
         lst = self.get()
+        if isinstance(lst, basestring):
+            return lst
+        else:
+            return ', '.join(lst)
+
+    def default_string(self):
+        """ Return the default list as a comma-separated string """
+        lst = self.default()
         if isinstance(lst, basestring):
             return lst
         else:
@@ -340,7 +349,7 @@ class OptionPassword(Option):
 
 @synchronized(CONFIG_LOCK)
 def add_to_database(section, keyword, obj):
-    """ add object as secion/keyword to INI database """
+    """ add object as section/keyword to INI database """
     global database
     if section not in database:
         database[section] = {}
@@ -377,7 +386,7 @@ class ConfigServer(object):
         self.password = OptionPassword(name, 'password', '', add=False)
         self.connections = OptionNumber(name, 'connections', 1, 0, 100, add=False)
         self.ssl = OptionBool(name, 'ssl', False, add=False)
-        self.ssl_verify = OptionNumber(name, 'ssl_verify', 1, add=False) # 0=No, 1=Normal, 2=Strict (hostname verification)
+        self.ssl_verify = OptionNumber(name, 'ssl_verify', 2, add=False)  # 0=No, 1=Normal, 2=Strict (hostname verification)
         self.enable = OptionBool(name, 'enable', True, add=False)
         self.optional = OptionBool(name, 'optional', False, add=False)
         self.retention = OptionNumber(name, 'retention', add=False)
@@ -542,7 +551,7 @@ class OptionFilters(Option):
                 if isinstance(val, list):
                     filters.append(val)
                 else:
-                    filters.append(listquote.simplelist(val))
+                    filters.append(paramfinder.findall(val))
                 while len(filters[-1]) < 7:
                     filters[-1].append('1')
                 if not filters[-1][6]:
@@ -607,7 +616,7 @@ class ConfigRSS(object):
 
 
 def get_dconfig(section, keyword, nested=False):
-    """ Return a config values dictonary,
+    """ Return a config values dictionary,
         Single item or slices based on 'section', 'keyword'
     """
     data = {}
@@ -782,7 +791,6 @@ def _read_config(path, try_backup=False):
 def save_config(force=False):
     """ Update Setup file with current option values """
     global CFG, database, modified
-    if 0: assert isinstance(CFG, configobj.ConfigObj)
 
     if not (modified or force):
         return True
@@ -813,9 +821,11 @@ def save_config(force=False):
                 except KeyError:
                     CFG[sec] = {}
                 value = database[section][option]()
-                if type(value) == type(True):
+                # bool is a subclass of int, check first
+                if isinstance(value, bool):
+                    # convert bool to int when saving so we store 0 or 1
                     CFG[sec][kw] = str(int(value))
-                elif type(value) == type(0):
+                elif isinstance(value, int):
                     CFG[sec][kw] = str(value)
                 else:
                     CFG[sec][kw] = value
@@ -917,7 +927,7 @@ def get_categories(cat=0):
     if '*' not in cats:
         ConfigCat('*', {'pp': old_def('dirscan_opts', '3'), 'script': old_def('dirscan_script', 'None'),
                         'priority': old_def('dirscan_priority', NORMAL_PRIORITY)})
-        # Add some categorie suggestions
+        # Add some category suggestions
         ConfigCat('movies', {})
         ConfigCat('tv', {})
         ConfigCat('audio', {})
@@ -950,6 +960,7 @@ def get_ordered_categories():
     categories.insert(0, database_cats['*'].get_dict())
 
     return categories
+
 
 def define_rss():
     """ Define rss-feeds listed in the Setup file
@@ -1051,15 +1062,6 @@ def validate_safedir(root, value, default):
         return validate_no_unc(root, value, default)
     else:
         return T('Error: Queue not empty, cannot change folder.'), None
-
-
-def validate_dir_exists(root, value, default):
-    """ Check if directory exists """
-    p = sabnzbd.misc.real_path(root, value)
-    if os.path.exists(p):
-        return None, value
-    else:
-        return T('Folder "%s" does not exist') % p, None
 
 
 def validate_notempty(root, value, default):
